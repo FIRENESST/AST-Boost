@@ -1,0 +1,11 @@
+# Local backups and archives
+backups/
+*.zip
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

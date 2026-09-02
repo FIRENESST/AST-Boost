@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ast-boost"
+version = "0.1.0"
+description = "Sign- and basis-invariant spectral encodings for Graph Transformers"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Research prototype; license TBD" }
+authors = [{ name = "AST-Boost contributors" }]
+dependencies = [
+    "numpy>=1.24",
+    "pytest>=7.4",
+    "scipy>=1.10",
+    "torch>=2.1",
+]
+
+[project.scripts]
+ast-boost-precompute = "ast_boost.cli:main"
+
+[project.optional-dependencies]
+# Install the PyG wheel appropriate for the local Torch/CUDA build first when
+# required by the platform, then install this extra.
+pyg = [
+    "torch-geometric>=2.5",
+]
+# GraphGPS is supplied through PyG's GraphGym integration; these packages are
+# intentionally optional so the spectral core remains usable without PyG.
+graphgps = [
+    "pytorch-lightning>=2.1",
+    "torch-geometric>=2.5",
+    "yacs>=0.1.8",
+]
+dev = [
+    "pytest-cov>=4.1",
+    "ruff>=0.5",
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["ast_boost*"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

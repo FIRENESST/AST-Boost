@@ -1,0 +1,110 @@
+# AST-Full: AST-Kern plus low-frequency, cross-node second-order spectral fields.
+# The field encoder is shared across pairs; its width is reduced for budget matching.
+experiment:
+  name: zinc_ast_full
+  seed: 42
+  deterministic: true
+
+data:
+  name: ZINC
+  root: data/ZINC
+  subset: true
+  task: graph_regression
+  target: mae
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+
+precompute:
+  enabled: true
+  cache_dir: .cache/zinc/spectral_k8
+  laplacian: sym
+  k: 8
+  skip_zero: true
+  zero_tolerance: 1.0e-8
+  isolated_degree: 1.0e-6
+  dense_threshold: 256
+  sparse_solver:
+    sigma: 1.0e-5
+    which: LM
+
+degeneracy:
+  eps: 1.0e-2
+  tau: 1.0e-6
+
+kernel:
+  enabled: true
+  heads: 4
+  basis: bernstein
+  order: 8
+  block_clamp: true
+  positive_response: false
+
+bias:
+  enabled: true
+  standardize: true
+  offdiag_only: true
+  alpha:
+    learnable: true
+    init: 0.1
+    per_head: true
+
+lite:
+  enabled: false
+
+adapter:
+  token_dim: 64
+  project_concat_back_to_token_dim: true
+  spectra_device: cuda
+  batch_bias_layout: padded
+  contiguous_batch: true
+  non_blocking: true
+
+sign:
+  psi: gin
+  psi_layers: 2
+  hidden_dim: 48
+  output_dim: 32
+  aggregation: sum
+  dropout: 0.1
+  first_order:
+    enabled: true
+    k: 8
+    include_eigenvalue_embedding: true
+  second_order:
+    enabled: true
+    k0_pairs: 4
+    pair_mode: low_frequency_upper_triangle
+    include_diagonal_pairs: true
+    exclude_within_degenerate_block: true
+    share_second_order_psi: true
+
+gps:
+  hidden_dim: 64
+  layers: 5
+  transformer_heads: 4
+  local_model: gatedgcn
+  global_model: transformer
+  dropout: 0.1
+  attn_dropout: 0.1
+
+train:
+  device: cuda
+  precision: 16-mixed
+  batch_size: 32
+  max_epochs: 1000
+  optimizer: adamw
+  lr: 5.0e-4
+  weight_decay: 1.0e-5
+  scheduler:
+    name: reduce_on_plateau
+    factor: 0.5
+    patience: 20
+    monitor: val_mae
+    mode: min
+  gradient_clip_norm: 1.0
+  early_stopping_patience: 100
+
+evaluation:
+  metric: mae
+  report_best_validation_checkpoint: true
