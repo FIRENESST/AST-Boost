@@ -26,6 +26,9 @@ ast-boost-precompute = "ast_boost.cli:main"
 pyg = [
     "torch-geometric>=2.5",
 ]
+experiments = [
+    "torch-geometric==2.7.0",
+]
 # GraphGPS is supplied through PyG's GraphGym integration; these packages are
 # intentionally optional so the spectral core remains usable without PyG.
 graphgps = [

@@ -20,6 +20,14 @@ except ImportError:  # pragma: no cover - preprocessing-only environment
 
 if torch is not None:
 
+    def _canonical_device(device: torch.device | str) -> torch.device:
+        target = torch.device(device)
+        if target.type == "cuda" and target.index is None:
+            return torch.device("cuda", torch.cuda.current_device())
+        if target.type == "cpu":
+            return torch.device("cpu")
+        return target
+
     @dataclass(frozen=True, slots=True)
     class TorchSpectrum:
         """A device-ready spectrum and its invariant fields.
@@ -99,7 +107,7 @@ if torch is not None:
             non_blocking: bool = True,
         ) -> TorchSpectrum:
             """Move floating data and integer metadata together."""
-            target = torch.device(device)
+            target = _canonical_device(device)
             target_dtype = dtype or self.dtype
             if self.device == target and self.dtype == target_dtype:
                 return self
@@ -184,7 +192,7 @@ if torch is not None:
             dtype: torch.dtype | None = None,
             non_blocking: bool = True,
         ) -> TorchSpectrumBatch:
-            target = torch.device(device)
+            target = _canonical_device(device)
             target_dtype = dtype or self.dtype
             if self.device == target and self.dtype == target_dtype:
                 return self
@@ -278,7 +286,7 @@ if torch is not None:
         """Pad spectra once so a full graph batch can run through fused GPU kernels."""
         if k0_pairs < 0:
             raise ValueError("k0_pairs must be non-negative")
-        target = torch.device(device)
+        target = _canonical_device(device)
         build_device = target
         if not spectra or not all(
             isinstance(spectrum, TorchSpectrum) and spectrum.device == target

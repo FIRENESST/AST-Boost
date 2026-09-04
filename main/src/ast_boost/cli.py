@@ -38,7 +38,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--degeneracy-eps", type=float, default=1e-2)
     parser.add_argument("--degeneracy-tau", type=float, default=1e-6)
     parser.add_argument("--dense-threshold", type=int, default=256)
-    parser.add_argument("--sparse-sigma", type=float, default=1e-5)
+    parser.add_argument(
+        "--sparse-sigma",
+        type=float,
+        default=-1e-5,
+        help="Negative shift for the lowest PSD modes (default: -1e-5)",
+    )
     return parser
 
 

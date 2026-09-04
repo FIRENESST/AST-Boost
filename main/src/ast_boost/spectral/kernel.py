@@ -124,6 +124,25 @@ except ImportError:  # pragma: no cover - exercised only in a preprocessing-only
 if torch is not None:
     from .torch_spectrum import SpectrumInput, ensure_torch_spectrum
 
+    def _standardize_torch(kernels: Tensor, mask: Tensor, eps: float) -> Tensor:
+        """Masked two-pass population moments without diagonal cancellation.
+
+        A detached common offset cancels algebraically from both the value and
+        its gradient. It prevents a large common mean from losing small, real
+        off-diagonal differences. No graph/head is coupled to another.
+        """
+        stats = kernels.float() if kernels.dtype in {torch.float16, torch.bfloat16} else kernels
+        if stats.shape[-1] <= 1:
+            return stats * 0.0
+        count = mask.sum(dim=(-2, -1), keepdim=True).clamp_min(1)
+        anchor = stats.masked_fill(~mask, float("inf")).amin(dim=(-2, -1), keepdim=True)
+        anchor = torch.where(mask.any(dim=(-2, -1), keepdim=True), anchor, 0.0).detach()
+        shifted = (stats - anchor).masked_fill(~mask, 0.0)
+        mean = shifted.sum(dim=(-2, -1), keepdim=True) / count
+        centered = (shifted - mean).masked_fill(~mask, 0.0)
+        variance = centered.square().sum(dim=(-2, -1), keepdim=True) / count
+        return centered * torch.rsqrt(variance.clamp_min(eps**2))
+
     class SpectralKernelBias(nn.Module):
         """Per-attention-head Bernstein spectral kernels.
 
@@ -148,6 +167,10 @@ if torch is not None:
                 raise ValueError("heads must be positive")
             if degree < 0:
                 raise ValueError("degree must be non-negative")
+            if not np.isfinite(domain_max) or domain_max <= 0:
+                raise ValueError("domain_max must be finite and positive")
+            if not np.isfinite(eps) or eps <= 0:
+                raise ValueError("eps must be finite and positive")
             self.heads = heads
             self.degree = degree
             self.block_clamp = block_clamp
@@ -182,8 +205,8 @@ if torch is not None:
             if eigenvalues.ndim == 1:
                 # Keep the small single-graph GEMM in its faster HxD @ DxK
                 # orientation; the batched path below handles (...,K,D).
-                return self.coefficients @ basis.T
-            return torch.matmul(basis, self.coefficients.T).movedim(-1, -2)
+                return self.coefficients.to(dtype=basis.dtype) @ basis.T
+            return torch.matmul(basis, self.coefficients.to(dtype=basis.dtype).T).movedim(-1, -2)
 
         def raw_kernel(
             self,
@@ -196,6 +219,8 @@ if torch is not None:
             parameter = self.coefficients
             device = device or parameter.device
             dtype = dtype or parameter.dtype
+            if dtype in {torch.float16, torch.bfloat16}:
+                dtype = torch.float32
             prepared = ensure_torch_spectrum(
                 spectrum,
                 k0_pairs=0,
@@ -204,9 +229,12 @@ if torch is not None:
             )
             vectors = prepared.eigenvectors
             eigenvalues = prepared.clamped_eigenvalues if self.block_clamp else prepared.eigenvalues
-            weights = self.response(eigenvalues)
-            weighted_vectors = vectors.unsqueeze(0) * weights.unsqueeze(1)
-            return torch.matmul(weighted_vectors, vectors.T)
+            # Orthogonal-projector contractions and their subsequent variance
+            # are precision-sensitive; AMP remains enabled for the neural PE.
+            with torch.autocast(device_type=vectors.device.type, enabled=False):
+                weights = self.response(eigenvalues)
+                weighted_vectors = vectors.unsqueeze(0) * weights.unsqueeze(1)
+                return torch.matmul(weighted_vectors, vectors.T)
 
         def raw_kernel_padded(
             self,
@@ -224,10 +252,14 @@ if torch is not None:
                 or eigenvectors.shape[2] != eigenvalues.shape[1]
             ):
                 raise ValueError("padded spectrum dimensions do not agree")
-            weights = self.response(eigenvalues)
-            weights = weights * frequency_mask[:, None, :].to(dtype=weights.dtype)
-            weighted_vectors = eigenvectors[:, None, :, :] * weights[:, :, None, :]
-            return torch.matmul(weighted_vectors, eigenvectors.transpose(-1, -2)[:, None, :, :])
+            with torch.autocast(device_type=eigenvectors.device.type, enabled=False):
+                if eigenvectors.dtype in {torch.float16, torch.bfloat16}:
+                    eigenvectors = eigenvectors.float()
+                eigenvalues = eigenvalues.to(dtype=eigenvectors.dtype)
+                weights = self.response(eigenvalues)
+                weights = weights * frequency_mask[:, None, :].to(dtype=weights.dtype)
+                weighted_vectors = eigenvectors[:, None, :, :] * weights[:, :, None, :]
+                return torch.matmul(weighted_vectors, eigenvectors.transpose(-1, -2)[:, None, :, :])
 
         def forward_padded(
             self,
@@ -246,22 +278,10 @@ if torch is not None:
             ).unsqueeze(0)
             offdiagonal_mask = pair_mask & ~diagonal
             if self.standardize:
-                stats = (
-                    kernels.float() if kernels.dtype in {torch.float16, torch.bfloat16} else kernels
-                )
-                mask = offdiagonal_mask[:, None, :, :].to(dtype=stats.dtype)
-                count = mask.sum(dim=(-2, -1)).clamp_min(1.0)
-                mean = (stats * mask).sum(dim=(-2, -1)) / count
-                second_moment = (stats.square() * mask).sum(dim=(-2, -1)) / count
-                variance = (second_moment - mean.square()).clamp_min(self.eps**2)
-                kernels = (
-                    (stats - mean[:, :, None, None])
-                    * torch.rsqrt(variance[:, :, None, None])
-                    * mask
-                ).to(dtype=kernels.dtype)
+                kernels = _standardize_torch(kernels, offdiagonal_mask[:, None, :, :], self.eps)
             else:
                 kernels = kernels * pair_mask[:, None, :, :].to(dtype=kernels.dtype)
-            return self.alpha[None, :, None, None] * kernels
+            return self.alpha.to(dtype=kernels.dtype)[None, :, None, None] * kernels
 
         def forward(
             self,
@@ -273,31 +293,9 @@ if torch is not None:
             kernels = self.raw_kernel(spectrum, device=device, dtype=dtype)
             if self.standardize:
                 n = kernels.shape[-1]
-                if n <= 1:
-                    kernels = torch.zeros_like(kernels)
-                else:
-                    # Float32 moments keep AMP stable while avoiding a dense
-                    # boolean gather/scatter mask on every forward pass.
-                    stats = (
-                        kernels.float()
-                        if kernels.dtype in {torch.float16, torch.bfloat16}
-                        else kernels
-                    )
-                    diagonal = stats.diagonal(dim1=-2, dim2=-1)
-                    count = float(n * (n - 1))
-                    mean = (stats.sum(dim=(-2, -1)) - diagonal.sum(dim=-1)) / count
-                    second_moment = (
-                        stats.square().sum(dim=(-2, -1)) - diagonal.square().sum(dim=-1)
-                    ) / count
-                    variance = (second_moment - mean.square()).clamp_min(self.eps**2)
-                    normalized = (stats - mean[:, None, None]) * torch.rsqrt(
-                        variance[:, None, None]
-                    )
-                    normalized = normalized - torch.diag_embed(
-                        normalized.diagonal(dim1=-2, dim2=-1)
-                    )
-                    kernels = normalized.to(dtype=kernels.dtype)
-            return self.alpha[:, None, None] * kernels
+                mask = ~torch.eye(n, dtype=torch.bool, device=kernels.device)
+                kernels = _standardize_torch(kernels, mask, self.eps)
+            return self.alpha.to(dtype=kernels.dtype)[:, None, None] * kernels
 
 
 else:

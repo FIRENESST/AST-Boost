@@ -1,5 +1,12 @@
 # GPU optimization notes
 
+This page records the 2026-09-02 pass. The follow-up
+[theory audit](THEORY_AUDIT.md) records the 2026-09-03 backup, numerical fixes,
+CUDA device-alias fix, and repeated inference/backward measurements.
+The later [compact-backbone report](COMPACT_BACKBONE_20260903.md) covers
+whole-model training/inference timing and trained-checkpoint equivalence;
+its timings must not be mixed with the encoder-only measurements below.
+
 ## Recovery point
 
 The source snapshot taken before this optimization pass is:

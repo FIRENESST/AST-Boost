@@ -1,6 +1,6 @@
 # AST-Boost
 
-AST-Boost implements the v0.3 research specification for sign- and
+AST-Boost implements the core of the v0.3 research specification for sign- and
 basis-invariant spectral positional/structural encodings in Graph Transformers.
 It is a GraphGPS plugin project: the intended contribution is the encoding, not
 a replacement Transformer backbone.
@@ -13,9 +13,13 @@ The three supported variants are:
 | `kern` | first-order SignNet | invariant filtered spectral kernel | no |
 | `full` | first-order SignNet | invariant filtered spectral kernel | low-frequency pair fields |
 
-This remains a research prototype. It contains no claimed benchmark result;
-all comparisons should use a matched GraphGPS budget and the protocol in
-[`../READMEv0.3.md`](../READMEv0.3.md).
+This remains a research prototype, not an official GraphGPS reproduction.
+A standalone GPS-style ZINC experiment runner is now available; its short pilot
+results must not be presented as converged benchmark performance. All accuracy comparisons should
+use a matched GraphGPS budget and the protocol in
+[`../READMEv0.3.md`](../READMEv0.3.md). Read the
+[theory-to-implementation audit](docs/THEORY_AUDIT.md) for corrected mathematical
+claims, implementation boundaries, and measured synthetic GPU timings.
 
 ## Requirements and installation
 
@@ -101,7 +105,8 @@ configs/zinc/ast_kern.yaml
 configs/zinc/ast_full.yaml
 ```
 
-All three use the ZINC subset, `k=8`, and the same GraphGPS-sized backbone.
+These configuration drafts target the ZINC subset, `k=8`, and the same
+GraphGPS-sized backbone; they are not yet wired into a GraphGym config loader.
 `ast_full.yaml` reduces the shared SignNet width so its additional second-order
 path can be compared with `kern` under a similar parameter budget. Dataset
 files and precomputed spectra are intentionally kept outside version control.
@@ -143,7 +148,7 @@ DataLoader, create it in the collate path and transfer the whole object once:
 ```python
 import torch
 
-from ast_boost import ASTBoostPE, prepare_spectrum_batch
+from ast_boost import ASTBoostPE, attention_softmax, prepare_spectrum_batch
 
 device = torch.device("cuda")
 spectrum_batch = prepare_spectrum_batch(batch_spectra, k0_pairs=4, device=device)
@@ -161,6 +166,19 @@ with torch.autocast(device_type="cuda", dtype=torch.float16):
     )
 ```
 
+`tokens` stays flat in the original node order. Pack the backbone's Q/K/V into
+`(B, H, max_N, head_dim)` using `valid_nodes` before using the padded bias.
+For attention logits of shape `(B, H, max_N, max_N)`, use:
+
+```python
+weights = attention_softmax(logits, bias, attention_mask=mask)
+```
+
+This returns zero probability for fully masked padding-query rows, with finite
+gradients. Applying ordinary softmax to an all-`-inf` row would produce NaNs.
+Frozen spectra and kernel contractions stay in at least float32 under AMP;
+neural PE layers still benefit from mixed precision.
+
 For a cache too large for VRAM, call `prepare_spectrum_batch(...,
 pin_memory=True)` on CPU and move the resulting object with
 `.to("cuda", non_blocking=True)`. The implementation precomputes invariant
@@ -171,17 +189,24 @@ that compatibility path performs a stable node sort.
 
 Prefer `forward_padded_batch` when dense attention memory is the constraint. It
 allocates `(B, H, max_N, max_N)` bias rather than `(H, sum_N, sum_N)`.
-`forward_batch` remains as the low-memory-independent compatibility/reference
-path. In both cases, apply the returned mask before softmax. Compare the two
+`forward_batch` remains as the compatibility/reference path and allocates a
+larger disjoint bias. In both cases, use the returned mask with attention.
+Compare the two
 paths on the target workload with:
 
 ```powershell
 .\.venv\Scripts\python.exe benchmarks\benchmark_gpu.py `
-  --batch-size 32 --nodes 64 --variant full
+  --batch-size 32 --nodes 64 --variant full --repeats 5
 ```
 
+Add `--include-preparation` to include per-step packing of GPU-resident spectra,
+or `--backward` to measure forward plus backward (without optimizer/GradScaler).
+Results report medians and ranges with alternating path order. They do not
+include the GraphGPS backbone, DataLoader, or disk IO.
+
 The accepted/rejected experiments and the source recovery point are recorded in
-[`docs/GPU_OPTIMIZATION.md`](docs/GPU_OPTIMIZATION.md).
+[`docs/GPU_OPTIMIZATION.md`](docs/GPU_OPTIMIZATION.md) and the latest
+[`docs/THEORY_AUDIT.md`](docs/THEORY_AUDIT.md).
 
 For framework-independent offline caching, the installed package also provides
 an NPZ-to-NPZ command.  The input archive contains `edge_index` plus optional
@@ -191,6 +216,113 @@ and the v0.3 degeneracy blocks:
 ```bash
 ast-boost-precompute graph.npz spectrum.npz --k 8 --laplacian sym
 ```
+
+The lowest-spectrum solver now uses a negative shift (`--sparse-sigma=-1e-5`).
+Dense and sparse branches both coalesce duplicate directed edges by maximum
+weight before symmetrizing. Regenerate caches affected by the former positive
+shift or inconsistent duplicate-edge handling; the sample YAMLs use a new
+`spectral_k8_v2` directory without deleting old caches.
+
+For the combinatorial Laplacian ablation, set `ASTBoostPE(kernel_domain_max=...)`
+to a suitable shared upper spectral bound; its eigenvalues need not lie in
+`[0, 2]`. `kernel_eps` controls the off-diagonal standardization floor (default
+`1e-8`); near-constant kernels still require sensitivity checks.
+
+## Controlled ZINC experiments
+
+Full is retained as a first-class variant. Short runs, a single seed, or extra
+runtime are not grounds to delete it. The runner has no automatic elimination
+of variants or checkpoints.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[experiments]"
+.\.venv\Scripts\python.exe -m ast_boost.experiments.train `
+  --output runs/my-zinc-pilot --epochs 5 --seeds 42 43 44 45 46
+```
+
+This runs `rwse`, random-sign `lappe`, `signnet_local`, `kern`, and `full` on
+the same 10-layer GINE+Transformer-style backbone and the official ZINC subset
+splits. `signnet_local` is the project's first-order, degeneracy-aware control,
+NOT the public SignNet implementation. The old YAML drafts are not consumed by
+this CLI; its actual arguments and source hashes are saved in each run manifest.
+See [experiment protocol and limits](docs/EXPERIMENTS.md).
+The completed 25-run pilot and layout-reuse timings are reported in
+[ZINC pilot results](docs/ZINC_PILOT_20260903.md); Full remains available.
+
+Datasets, GPU-bank cache, metrics and checkpoints remain under `main/data`,
+`main/.cache`, and your `main/runs` output. Resume an interrupted run using the
+identical command plus `--resume`; changed code/protocol or an existing output
+without `--resume` is rejected. Test-set evaluation is opt-in via
+`--evaluate-test`; leave it off while choosing hyperparameters.
+
+The GPU-bank path uses `ASTBoostPE.forward_packed` to reuse the node/edge layout.
+It preserves `forward_padded_batch`'s values and gradients and keeps both of
+Full's field branches. The caller must supply already-validated padded edges.
+
+The local trainer now defaults to `--node-layout compact`: GINE, BatchNorm and
+feed-forward layers work on real nodes, while attention alone packs Q/K/V.
+`--node-layout padded` retains the previous backbone implementation for
+comparison. Parameters and checkpoint tensor names are unchanged; floating-point
+rounding and dropout RNG consumption can differ. Use a **new output directory**
+for new-code experiments, not the completed pilot directory.
+
+`--k 8 --pairs 4 --rw-steps 20` exposes the spectral/RWSE ablation budgets without
+editing code; `pairs` is the low-frequency cutoff k0, not the number of pair
+fields. Defaults are unchanged. Each new study automatically saves and verifies
+`source_snapshot.zip`. Epoch commits now include metric history and best-model
+weights, so interrupted log/best-checkpoint publication can be repaired on resume.
+See [compact-backbone optimization and verification](docs/COMPACT_BACKBONE_20260903.md).
+
+For joint accuracy/throughput experiments, `--field-scaling size` conditions the
+first-order inputs by sqrt(N) and second-order inputs by N without changing the
+relative kernel or removing any Full fields. It is opt-in; the default remains
+`none`. `--signal-backend dense` is an optional small-graph GEMM implementation
+with extra adjacency storage; `sparse` remains the default. Neither flag alone
+constitutes evidence of better accuracy or runtime.
+
+```powershell
+.\.venv\Scripts\python.exe -m ast_boost.experiments.compare `
+  --output runs/my-accuracy-speed-study --epochs 20 --seeds 42 43 44
+```
+
+This freezes three Full configurations before training, rotates their order by
+seed, and preserves every result. It separates a field-conditioning ablation
+from a larger-batch/learning-rate configuration. See the
+[accuracy and throughput study](docs/ACCURACY_SPEED_20260904.md) for its evidence
+and limits; test labels are not used for this optimization.
+
+The larger-batch arm with `lr=0.002` is exploratory: an independent 30-epoch
+run encountered exploding gradients and remains recorded as incomplete. Do not
+disable nonfinite-gradient checks to force it through. The report also records
+the separate B64/`lr=0.001` follow-up and both beneficial and harmful BN
+recalibration results; no original checkpoint or Full branch is replaced.
+
+The latest local ZINC candidate combines exact shared-field execution, B128,
+and a 35-epoch cosine schedule:
+
+```powershell
+.\.venv\Scripts\python.exe -m ast_boost.experiments.train `
+  --methods full --field-scaling size --batch-size 128 --lr 0.001 `
+  --scheduler cosine --epochs 35 --seeds 42 43 44 `
+  --output runs/my-full-accuracy-speed
+```
+
+Across three seeds, it obtained validation MAE 0.2827 versus the previous B64/20
+candidate's 0.3000, while mean training+validation time fell from 103.6 to 97.8
+seconds on this device. It used 35 data passes but 11.9% fewer optimizer updates;
+peak allocated memory increased to about 483 MiB. The earlier same-source,
+same-20-epoch schedule comparison remains the evidence that favored cosine over
+Plateau. These are exploratory validation results, not test-set or published
+benchmark claims. `plateau` remains the compatibility default; request `cosine`
+explicitly. All Full branches and parameters remain active. See the
+[latest optimization report](docs/NEXT_OPTIMIZATION_20260904.md) and the earlier
+[mathematical/code optimization report](docs/MATH_CODE_OPTIMIZATION_20260904.md).
+
+Full now executes first- and second-order fields in one call when their `psi`
+GIN is shared, as required by the v0.3 batching design. The two independent
+`rho` readouts and every field remain. Set `fuse_shared_fields=False` only for
+the retained reference path. Float64 values and gradients match; repeated
+whole-model BF16 measurements reduced training-step latency by 4.66%–5.33%.
 
 ## Verification
 

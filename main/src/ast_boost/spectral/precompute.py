@@ -42,10 +42,8 @@ def undirected_adjacency(
     if n < 0:
         raise ValueError("n must be non-negative")
     indices = _to_numpy(edge_index, dtype=np.int64)
-    if indices.shape[0] != 2:
+    if indices.ndim != 2 or indices.shape[0] != 2:
         raise ValueError("edge_index must have shape (2, num_edges)")
-    if indices.ndim != 2:
-        raise ValueError("edge_index must be two-dimensional")
     if indices.size and (indices.min() < 0 or indices.max() >= n):
         raise ValueError("edge_index has a node id outside [0, n)")
 
@@ -60,9 +58,8 @@ def undirected_adjacency(
             raise ValueError("edge_weight must be finite and non-negative")
 
     adjacency = np.zeros((n, n), dtype=np.float64)
-    for source, target, weight in zip(indices[0], indices[1], weights, strict=True):
-        if source != target:
-            adjacency[source, target] = max(adjacency[source, target], weight)
+    keep = indices[0] != indices[1]
+    np.maximum.at(adjacency, (indices[0, keep], indices[1, keep]), weights[keep])
     adjacency = np.maximum(adjacency, adjacency.T)
     return adjacency
 
@@ -138,10 +135,21 @@ def build_sparse_laplacian(
         if not np.all(np.isfinite(weights)) or np.any(weights < 0):
             raise ValueError("edge_weight must be finite and non-negative")
     keep = indices[0] != indices[1]
+    sources, targets = indices[:, keep]
+    selected_weights = weights[keep]
+    if sources.size:
+        # COO -> CSR sums duplicates by default. Coalesce by maximum first so
+        # switching dense_threshold cannot change the graph's edge weights.
+        order = np.lexsort((targets, sources))
+        sources, targets = sources[order], targets[order]
+        starts = np.r_[
+            0, np.flatnonzero((sources[1:] != sources[:-1]) | (targets[1:] != targets[:-1])) + 1
+        ]
+        selected_weights = np.maximum.reduceat(selected_weights[order], starts)
+        sources, targets = sources[starts], targets[starts]
     adjacency = sparse.coo_matrix(
-        (weights[keep], (indices[0, keep], indices[1, keep])), shape=(n, n), dtype=np.float64
+        (selected_weights, (sources, targets)), shape=(n, n), dtype=np.float64
     ).tocsr()
-    adjacency.sum_duplicates()
     adjacency = adjacency.maximum(adjacency.T).tocsr()
     adjacency.setdiag(0.0)
     adjacency.eliminate_zeros()
@@ -284,14 +292,15 @@ def precompute_spectrum(
     degeneracy_eps: float = 1e-2,
     degeneracy_tau: float = 1e-6,
     dense_threshold: int = 256,
-    sparse_sigma: float = 1e-5,
+    sparse_sigma: float = -1e-5,
 ) -> Spectrum:
     """Precompute the smallest positive Laplacian modes and degeneracy blocks.
 
     ZINC-scale graphs use dense ``eigh``.  Larger graphs use
-    ``scipy.sparse.linalg.eigsh(sigma=1e-5, which='LM')`` (shift-invert) as
-    prescribed in v0.3; the nonzero shift avoids factoring an exactly singular
-    normalized Laplacian.  The solver asks for extra modes and expands the
+    ``scipy.sparse.linalg.eigsh(sigma=-1e-5, which='LM')`` (shift-invert).
+    The negative shift keeps the factor nonsingular and orders every PSD mode
+    by distance from the low end; a positive interior shift can skip low modes.
+    The solver asks for extra modes and expands the
     request when disconnected components consume the zero eigenspace.
     """
     if n < 0:
@@ -302,8 +311,8 @@ def precompute_spectrum(
         raise ValueError("zero_tolerance must be non-negative")
     if dense_threshold < 1:
         raise ValueError("dense_threshold must be positive")
-    if sparse_sigma <= 0:
-        raise ValueError("sparse_sigma must be positive")
+    if not np.isfinite(sparse_sigma) or sparse_sigma >= 0:
+        raise ValueError("sparse_sigma must be finite and negative to target the lowest PSD modes")
     if n == 0 or k == 0:
         stored_kind: LaplacianKind = "sym" if laplacian == "rw" else laplacian
         return Spectrum(

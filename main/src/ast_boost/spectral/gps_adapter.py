@@ -53,12 +53,16 @@ if torch is not None:
             sign_layers: int = 2,
             k0_pairs: int = 4,
             kernel_degree: int = 8,
+            kernel_domain_max: float = 2.0,
             block_clamp: bool = True,
             standardize_bias: bool = True,
+            kernel_eps: float = 1e-8,
             alpha_init: float = 0.1,
             token_dim: int | None = None,
             share_second_order_psi: bool = True,
+            fuse_shared_fields: bool = True,
             non_blocking: bool = True,
+            field_scaling: Literal["none", "size"] = "none",
         ) -> None:
             super().__init__()
             if variant not in {"lite", "kern", "full"}:
@@ -72,14 +76,20 @@ if torch is not None:
             self.k0_pairs = k0_pairs
             self.token_dim = token_dim
             self.non_blocking = non_blocking
+            if field_scaling not in {"none", "size"}:
+                raise ValueError("field_scaling must be none or size")
+            self.field_scaling = field_scaling
+            self.fuse_shared_fields = fuse_shared_fields
             if token_dim is not None and token_dim <= 0:
                 raise ValueError("token_dim must be positive when provided")
             self.kernel = SpectralKernelBias(
                 heads=heads,
                 degree=kernel_degree,
+                domain_max=kernel_domain_max,
                 block_clamp=block_clamp,
                 standardize=standardize_bias,
                 alpha_init=alpha_init,
+                eps=kernel_eps,
             )
             if variant == "lite":
                 # v0.3's light local baseline: a function of |x_i|/squared
@@ -136,7 +146,7 @@ if torch is not None:
                     [squared.sum(dim=1).sqrt(), (squared * values[None, :]).sum(dim=1)],
                     dim=-1,
                 )
-            return self.lite_encoder(summary)
+            return self.lite_encoder(summary.to(dtype=self.lite_encoder[0].weight.dtype))
 
         def _second_order_features(
             self,
@@ -144,6 +154,8 @@ if torch is not None:
             edge_index: Tensor,
         ) -> Tensor:
             fields = self._second_order_fields(spectrum)
+            if self.field_scaling == "size":
+                fields = fields * spectrum.num_nodes
             return self.second_order_encoder(fields, edge_index)
 
         def _second_order_fields(self, spectrum: TorchSpectrum) -> Tensor:
@@ -158,7 +170,10 @@ if torch is not None:
             spectrum: TorchSpectrum,
             edge_index: Tensor,
         ) -> Tensor:
-            return self.first_order_encoder(spectrum.first_order, edge_index)
+            fields = spectrum.first_order
+            if self.field_scaling == "size":
+                fields = fields * spectrum.num_nodes**0.5
+            return self.first_order_encoder(fields, edge_index)
 
         def _match_parameter_dtype(self, x: Tensor) -> Tensor:
             """Make direct fp16/bf16 calls safe outside an autocast context."""
@@ -172,7 +187,7 @@ if torch is not None:
                 spectrum,
                 k0_pairs=self.k0_pairs,
                 device=x.device,
-                dtype=x.dtype,
+                dtype=self._spectral_dtype(),
                 non_blocking=self.non_blocking,
             )
 
@@ -183,14 +198,20 @@ if torch is not None:
                         f"prepared pair limit {spectra.pair_limit} must match model limit "
                         f"{self.k0_pairs}; rebuild the spectrum batch"
                     )
-                return spectra.to(x.device, dtype=x.dtype, non_blocking=self.non_blocking)
+                return spectra.to(
+                    x.device, dtype=self._spectral_dtype(), non_blocking=self.non_blocking
+                )
             return prepare_spectrum_batch(
                 spectra,
                 k0_pairs=self.k0_pairs,
                 device=x.device,
-                dtype=x.dtype,
+                dtype=self._spectral_dtype(),
                 non_blocking=self.non_blocking,
             )
+
+        def _spectral_dtype(self) -> torch.dtype:
+            dtype = self.kernel.coefficients.dtype
+            return torch.float32 if dtype in {torch.float16, torch.bfloat16} else dtype
 
         def forward(
             self, x: Tensor, spectrum: SpectrumInput, edge_index: Tensor
@@ -223,6 +244,23 @@ if torch is not None:
 
             if self.variant == "lite":
                 node_pe = self._lite_features(prepared)
+            elif (
+                self.variant == "full"
+                and self.fuse_shared_fields
+                and self.first_order_encoder.psi is self.second_order_encoder.psi
+            ):
+                first_fields = prepared.first_order
+                second_fields = self._second_order_fields(prepared)
+                if self.field_scaling == "size":
+                    first_fields = first_fields * prepared.num_nodes**0.5
+                    second_fields = second_fields * prepared.num_nodes
+                first_count = first_fields.shape[0]
+                invariant = self.first_order_encoder.encode_invariant(
+                    torch.cat((first_fields, second_fields), dim=0), local_edges
+                )
+                first = self.first_order_encoder.readout(invariant[:first_count])
+                second = self.second_order_encoder.readout(invariant[first_count:])
+                node_pe = torch.cat((first, second), dim=-1)
             else:
                 first = self._first_order_features(prepared, local_edges)
                 node_pe = first
@@ -248,6 +286,8 @@ if torch is not None:
             node pairs in the same graph.  Callers must mask false positions out
             of attention logits; zero cross-graph bias is not an attention mask.
             """
+            if x.ndim != 2:
+                raise ValueError("x must have shape (num_nodes, feature_dim)")
             if batch.ndim != 1 or batch.shape[0] != x.shape[0]:
                 raise ValueError("batch must contain one graph id per node")
             if not x.is_floating_point():
@@ -309,6 +349,10 @@ if torch is not None:
             fourth return value is a ``(B,max_N)`` valid-node mask for pooling or
             dense token packing.
             """
+            if x.ndim != 2:
+                raise ValueError("x must have shape (num_nodes, feature_dim)")
+            if self.token_dim is not None and x.shape[1] != self.token_dim:
+                raise ValueError("x width must match token_dim")
             if batch.ndim != 1 or batch.shape[0] != x.shape[0]:
                 raise ValueError("batch must contain one graph id per node")
             if not x.is_floating_point():
@@ -333,6 +377,8 @@ if torch is not None:
                 empty_mask = torch.zeros((0, 0, 0), dtype=torch.bool, device=x.device)
                 return x.new_zeros((0, output_width)), empty_bias, empty_mask, prepared.valid_nodes
 
+            if any(count <= 0 for count in prepared.node_counts):
+                raise ValueError("a nonempty spectrum batch cannot contain zero-node graphs")
             expected_counts = torch.as_tensor(
                 prepared.node_counts, device=x.device, dtype=torch.long
             )
@@ -341,15 +387,21 @@ if torch is not None:
             starts = torch.cat((expected_counts.new_zeros(1), expected_counts.cumsum(dim=0)[:-1]))
             if contiguous:
                 graph_index = torch.repeat_interleave(
-                    torch.arange(prepared.batch_size, device=x.device), expected_counts
+                    torch.arange(prepared.batch_size, device=x.device),
+                    expected_counts,
+                    output_size=x.shape[0],
                 )
                 local_index = torch.arange(x.shape[0], device=x.device) - starts[graph_index]
                 if x.device.type == "cpu":
                     graph_ids, counts = torch.unique_consecutive(batch, return_counts=True)
-                    if graph_ids.numel() != prepared.batch_size or not torch.equal(
-                        counts, expected_counts
+                    if (
+                        graph_ids.numel() != prepared.batch_size
+                        or not torch.equal(counts, expected_counts)
+                        or bool(torch.any(graph_ids[1:] <= graph_ids[:-1]))
                     ):
-                        raise ValueError("contiguous=True requires one contiguous block per graph")
+                        raise ValueError(
+                            "contiguous=True requires ascending contiguous graph blocks"
+                        )
                 else:
                     block_ids = batch[starts]
                     valid_layout = torch.all(batch == block_ids[graph_index])
@@ -387,6 +439,50 @@ if torch is not None:
             same_graph_edge = graph_index[source] == graph_index[target]
             padded_edges = padded_index[edge_index[:, same_graph_edge]]
 
+            padded_tokens, padded_bias = self.forward_packed(padded_x, padded_edges, prepared)
+            output = padded_tokens.reshape(-1, output_width)[padded_index]
+            attention_mask = prepared.valid_nodes[:, :, None] & prepared.valid_nodes[:, None, :]
+            return output, padded_bias, attention_mask, prepared.valid_nodes
+
+        def forward_packed(
+            self,
+            x: Tensor,
+            edge_index: Tensor,
+            spectra: TorchSpectrumBatch,
+            *,
+            compute_bias: bool = True,
+            dense_adjacency: Tensor | None = None,
+        ) -> tuple[Tensor, Tensor | None]:
+            """Encode already-packed tokens without rebuilding node/edge layout.
+
+            ``x`` is (B,N,D); edge IDs address the flattened B*N padded slots.
+            The caller must prevalidate that edges never cross graphs or touch
+            padding. This path supports GPU-resident dataset banks and keeps the
+            same learned function as ``forward_padded_batch``. Disabling bias is
+            an explicit first-order/control ablation, not the default.
+            Optional dense_adjacency must encode the same edge multiset as
+            edge_index, with entries A[target,source]; prevalidate it once.
+            """
+            if x.ndim != 3 or x.shape[:2] != spectra.valid_nodes.shape:
+                raise ValueError("packed x must have shape (batch, max_nodes, features)")
+            if self.token_dim is not None and x.shape[-1] != self.token_dim:
+                raise ValueError("x width must match token_dim")
+            if not x.is_floating_point():
+                raise TypeError("packed x must contain floating node tokens")
+            if edge_index.ndim != 2 or edge_index.shape[0] != 2:
+                raise ValueError("edge_index must have shape (2, num_edges)")
+            x = self._match_parameter_dtype(x)
+            prepared = self._prepare_batch(spectra, x)
+            padded_edges = edge_index.to(device=x.device, dtype=torch.long)
+            if x.device.type == "cpu" and padded_edges.numel():
+                n = x.shape[1]
+                if bool((padded_edges < 0).any() or (padded_edges >= x.shape[0] * n).any()):
+                    raise ValueError("packed edge index is out of range")
+                if bool((padded_edges[0] // n != padded_edges[1] // n).any()):
+                    raise ValueError("packed edges must not cross graphs")
+                if not bool(prepared.valid_nodes.reshape(-1)[padded_edges].all()):
+                    raise ValueError("packed edges must not touch padding")
+
             if self.variant == "lite":
                 squared = prepared.eigenvectors.square()
                 summary = torch.stack(
@@ -396,36 +492,70 @@ if torch is not None:
                     ],
                     dim=-1,
                 )
-                node_pe = self.lite_encoder(summary)
+                node_pe = self.lite_encoder(summary.to(dtype=self.lite_encoder[0].weight.dtype))
             else:
-                first = self.first_order_encoder.forward_padded(
-                    prepared.first_order, padded_edges, prepared.first_order_mask
-                )
-                node_pe = first
-                if self.variant == "full":
-                    second = self.second_order_encoder.forward_padded(
-                        prepared.second_order,
+                first_fields, second_fields = prepared.first_order, prepared.second_order
+                if self.field_scaling == "size":
+                    # Positive graph-size factors preserve sign, basis and
+                    # permutation invariance. Frozen U and the relative kernel
+                    # remain unchanged. Projector-diagonal first fields also
+                    # use sqrt(N); this is an explicit conditioning ablation.
+                    counts = prepared.valid_nodes.sum(1).to(first_fields.dtype)[:, None, None]
+                    first_fields = first_fields * counts.sqrt()
+                    second_fields = second_fields * counts
+                if (
+                    self.variant == "full"
+                    and self.fuse_shared_fields
+                    and self.first_order_encoder.psi is self.second_order_encoder.psi
+                ):
+                    first_count = first_fields.shape[1]
+                    invariant = self.first_order_encoder.encode_padded_invariant(
+                        torch.cat((first_fields, second_fields), dim=1),
                         padded_edges,
-                        prepared.second_order_mask,
+                        adjacency=dense_adjacency,
+                    )
+                    first = self.first_order_encoder.readout_padded(
+                        invariant[:first_count], prepared.first_order_mask
+                    )
+                    second = self.second_order_encoder.readout_padded(
+                        invariant[first_count:], prepared.second_order_mask
                     )
                     node_pe = torch.cat((first, second), dim=-1)
+                else:
+                    first = self.first_order_encoder.forward_padded(
+                        first_fields,
+                        padded_edges,
+                        prepared.first_order_mask,
+                        adjacency=dense_adjacency,
+                    )
+                    node_pe = first
+                    if self.variant == "full":
+                        second = self.second_order_encoder.forward_padded(
+                            second_fields,
+                            padded_edges,
+                            prepared.second_order_mask,
+                            adjacency=dense_adjacency,
+                        )
+                        node_pe = torch.cat((first, second), dim=-1)
 
             kernel_values = (
                 prepared.clamped_eigenvalues if self.kernel.block_clamp else prepared.eigenvalues
             )
-            padded_bias = self.kernel.forward_padded(
-                kernel_values,
-                prepared.eigenvectors,
-                prepared.frequency_mask,
-                prepared.valid_nodes,
+            padded_bias = (
+                self.kernel.forward_padded(
+                    kernel_values,
+                    prepared.eigenvectors,
+                    prepared.frequency_mask,
+                    prepared.valid_nodes,
+                )
+                if compute_bias
+                else None
             )
-            padded_tokens = torch.cat((padded_x, node_pe), dim=-1)
+            padded_tokens = torch.cat((x, node_pe), dim=-1)
             if self.token_fusion is not None:
                 padded_tokens = self.token_fusion(padded_tokens)
             padded_tokens = padded_tokens.masked_fill(~prepared.valid_nodes[:, :, None], 0.0)
-            output = padded_tokens.reshape(-1, output_width)[padded_index]
-            attention_mask = prepared.valid_nodes[:, :, None] & prepared.valid_nodes[:, None, :]
-            return output, padded_bias, attention_mask, prepared.valid_nodes
+            return padded_tokens, padded_bias
 
     def add_attention_bias(
         logits: Tensor,
@@ -463,6 +593,29 @@ if torch is not None:
             )
         return output
 
+    def attention_softmax(
+        logits: Tensor,
+        bias: Tensor,
+        *,
+        attention_mask: Tensor | None = None,
+    ) -> Tensor:
+        """Bias + masked softmax with exactly zero probabilities for padded queries.
+
+        Replacing empty rows *before* softmax avoids NaN backward derivatives;
+        calling nan_to_num after an all-minus-infinity softmax is insufficient.
+        Other nonfinite inputs are deliberately not hidden.
+        """
+        masked_logits = add_attention_bias(logits, bias, attention_mask=attention_mask)
+        empty_rows = torch.isneginf(masked_logits).all(dim=-1, keepdim=True)
+        safe_logits = masked_logits.masked_fill(empty_rows, 0.0)
+        work_dtype = (
+            torch.float32
+            if safe_logits.dtype in {torch.float16, torch.bfloat16}
+            else safe_logits.dtype
+        )
+        probabilities = torch.softmax(safe_logits, dim=-1, dtype=work_dtype)
+        return probabilities.masked_fill(empty_rows, 0.0).to(dtype=masked_logits.dtype)
+
 
 else:
 
@@ -472,3 +625,6 @@ else:
 
     def add_attention_bias(*args: object, **kwargs: object) -> object:  # pragma: no cover
         raise ImportError("add_attention_bias requires PyTorch; install `pip install -e .`.")
+
+    def attention_softmax(*args: object, **kwargs: object) -> object:  # pragma: no cover
+        raise ImportError("attention_softmax requires PyTorch; install `pip install -e .`.")

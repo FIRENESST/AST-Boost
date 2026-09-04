@@ -17,7 +17,7 @@ data:
 
 precompute:
   enabled: true
-  cache_dir: .cache/zinc/spectral_k8
+  cache_dir: .cache/zinc/spectral_k8_v2
   laplacian: sym
   k: 8
   skip_zero: true
@@ -25,7 +25,7 @@ precompute:
   isolated_degree: 1.0e-6
   dense_threshold: 256
   sparse_solver:
-    sigma: 1.0e-5
+    sigma: -1.0e-5
     which: LM
 
 degeneracy:
@@ -36,6 +36,7 @@ kernel:
   enabled: true
   heads: 4
   basis: bernstein
+  domain_max: 2.0  # L_sym spectrum; enlarge for a combinatorial-Laplacian ablation
   order: 8
   block_clamp: true
   positive_response: false
@@ -51,7 +52,7 @@ bias:
 
 lite:
   enabled: true
-  input: abs_u
+  input: spectral_norm_and_weighted_energy
   include_eigenvalue_summary: true
   encoder: mlp
   hidden_dim: 64

@@ -26,6 +26,8 @@ __all__ = [
     "prepare_spectrum",
     "prepare_spectra",
     "prepare_spectrum_batch",
+    "attention_softmax",
+    "add_attention_bias",
 ]
 
 
@@ -35,6 +37,10 @@ def __getattr__(name: str):
         from .spectral.gps_adapter import ASTBoostPE
 
         return ASTBoostPE
+    if name in {"attention_softmax", "add_attention_bias"}:
+        from .spectral import gps_adapter
+
+        return getattr(gps_adapter, name)
     if name == "SpectralKernelBias":
         from .spectral.kernel import SpectralKernelBias
 
