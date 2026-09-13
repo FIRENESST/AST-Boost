@@ -1,0 +1,77 @@
+{
+  "study": "graphgps-compatible-zinc-screen-20260907",
+  "test_evaluations": 0,
+  "graphgps_reference": {
+    "repository": "https://github.com/rampasek/GraphGPS",
+    "commit": "28015707cbab7f8ad72bed0ee872d068ea59c94b",
+    "scope": "GPSLayer, ZINC positional encoders, pooling/head, and cosine warmup ported to the standalone trainer; not the GraphGym runtime"
+  },
+  "screen_protocol": {
+    "dataset": "ZINC subset",
+    "train_graphs": 10000,
+    "validation_graphs": 1000,
+    "epochs": 35,
+    "warmup_epochs": 5,
+    "batch_size": 128,
+    "precision": "bf16",
+    "selection": "best validation MAE"
+  },
+  "single_seed_matrix": {
+    "seed": 42,
+    "rwse_graphgps": 0.17967671155929565,
+    "lappe_graphgps": 0.28615954518318176,
+    "signnet_graphgps": 0.23633752763271332,
+    "signnet_local": 0.2815466821193695,
+    "kern": 0.28089839220046997,
+    "full": 0.2791457176208496,
+    "full_minus_kern": -0.0017526745796203613,
+    "kern_minus_matched_first_order": -0.0006482899188995361,
+    "kern_minus_public_signnet": 0.04456086456775665,
+    "kern_minus_rwse": 0.10122168064117432
+  },
+  "capacity_check": {
+    "method": "kern",
+    "seed": 42,
+    "sign_hidden": 64,
+    "sign_layers": 8,
+    "parameters": 509441,
+    "best_validation_mae": 0.28298473358154297,
+    "reference_shallow_mae": 0.28089839220046997
+  },
+  "rwse_kernel_five_seed": {
+    "seeds": [42, 43, 44, 45, 46],
+    "rwse": [
+      0.1774451732635498,
+      0.18645264208316803,
+      0.18224230408668518,
+      0.18552152812480927,
+      0.17216069996356964
+    ],
+    "rwse_kernel": [
+      0.17616891860961914,
+      0.1866011917591095,
+      0.18062128126621246,
+      0.18486759066581726,
+      0.18033674359321594
+    ],
+    "paired_delta_kernel_minus_rwse": [
+      -0.001276254653930664,
+      0.00014854967594146729,
+      -0.0016210228204727173,
+      -0.0006539374589920044,
+      0.008176043629646301
+    ],
+    "rwse_mean": 0.18076446950435637,
+    "rwse_sample_std": 0.005962622889775504,
+    "rwse_kernel_mean": 0.18171914517879487,
+    "rwse_kernel_sample_std": 0.004113041516951278,
+    "paired_delta_mean": 0.0009546756744384765,
+    "paired_delta_sample_std": 0.004092581805832514,
+    "paired_delta_descriptive_95pct_t_interval": [
+      -0.004126935813567503,
+      0.006036287162444457
+    ],
+    "kernel_wins": 3,
+    "interpretation": "No stable H2 evidence in this short ZINC screen."
+  }
+}

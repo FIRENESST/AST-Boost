@@ -1,0 +1,22 @@
+{
+  "reference_commit": "28015707cbab7f8ad72bed0ee872d068ea59c94b",
+  "upstream_source_sha256": "985233e31edaa8e8f266b30b12fb94fe96fe3f9c16ae30c71e3143fe8f7440fd",
+  "port_source_sha256": "ac63962a4d4f85ecda0f264daee7d722736d03160762d4d5ee5502061f7c4616",
+  "scope": "CPU float64 encoder parity, including gradients and BN buffers; not GraphGym",
+  "checks": [
+    {
+      "mode": "eval",
+      "output_max_abs_error": 0.0,
+      "input_gradient_max_abs_error": 0.0,
+      "parameter_gradient_max_abs_error": 0.0,
+      "batchnorm_buffers_match": true
+    },
+    {
+      "mode": "train",
+      "output_max_abs_error": 0.0,
+      "input_gradient_max_abs_error": 0.0,
+      "parameter_gradient_max_abs_error": 0.0,
+      "batchnorm_buffers_match": true
+    }
+  ]
+}

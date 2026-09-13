@@ -1,7 +1,9 @@
 # AST-Lite: a quick, invariant pipeline check for ZINC-subset.
-# The schema mirrors the v0.3 README and is intentionally standalone.
+# Archived engineering baseline. It is outside the frozen GraphGPS H1/H2 matrix
+# and remains a non-executable protocol sketch.
 experiment:
   name: zinc_ast_lite
+  status: archived_protocol_sketch
   seed: 42
   deterministic: true
 

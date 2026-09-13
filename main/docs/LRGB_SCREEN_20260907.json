@@ -1,0 +1,55 @@
+{
+  "status": "single-seed short-screen",
+  "dataset": "Peptides-struct",
+  "splits": {
+    "train": 10873,
+    "val": 2331,
+    "test_evaluations": 0
+  },
+  "protocol": {
+    "epochs": 35,
+    "warmup_epochs": 10,
+    "batch_size": 128,
+    "batch_sampler": "fixed-length groups; shuffled batch order only",
+    "seed": 42,
+    "precision": "bf16",
+    "backbone": "CustomGatedGCN+Transformer",
+    "width": 96,
+    "layers": 4,
+    "heads": 4,
+    "optimizer": "AdamW",
+    "learning_rate": 0.0003,
+    "weight_decay": 0.0,
+    "selection": "best validation MAE"
+  },
+  "results": {
+    "signnet_local": {
+      "best_val_mae": 0.5142809748649597,
+      "best_epoch": 35,
+      "parameters": 525501,
+      "median_train_epoch_seconds": 3.700206600000456,
+      "peak_allocated_mib": 3486.6396484375
+    },
+    "kern": {
+      "best_val_mae": 0.5239425301551819,
+      "best_epoch": 35,
+      "parameters": 525541,
+      "median_train_epoch_seconds": 4.361840900000061,
+      "peak_allocated_mib": 4631.9833984375
+    },
+    "full": {
+      "best_val_mae": 0.5260061621665955,
+      "best_epoch": 35,
+      "parameters": 530837,
+      "median_train_epoch_seconds": 4.850025400000959,
+      "peak_allocated_mib": 5639.7646484375
+    }
+  },
+  "paired_differences": {
+    "kern_minus_matched_first_order": 0.009661555290222168,
+    "full_minus_kern": 0.0020636320114135742,
+    "interpretation": "negative favors the first named target"
+  },
+  "protocol_sha256": "28e54b6c9417c6d4e01d7593ae77a1ea5cbcd3dcf1420f987388029964d3d0d1",
+  "source_snapshot_sha256": "fc3f8c9c46acce69941a3c69c186aa9d869efc843f444e3e039826111102568c"
+}

@@ -1,0 +1,26 @@
+{
+  "reference_commit": "28015707cbab7f8ad72bed0ee872d068ea59c94b",
+  "upstream_source_sha256": "ca940ce5f2da3dff96bec874643766a55cf74b30f359289fd15731b0698081c9",
+  "port_source_sha256": "ac63962a4d4f85ecda0f264daee7d722736d03160762d4d5ee5502061f7c4616",
+  "scope": "CPU float64 local node/edge branch; native PyG sum adapter; not GraphGym",
+  "checks": [
+    {
+      "mode": "eval",
+      "node_output_max_abs_error": 0.0,
+      "edge_output_max_abs_error": 0.0,
+      "node_gradient_max_abs_error": 1.7763568394002505e-15,
+      "edge_gradient_max_abs_error": 0.0,
+      "parameter_gradient_max_abs_error": 0.0,
+      "batchnorm_buffers_match": true
+    },
+    {
+      "mode": "train",
+      "node_output_max_abs_error": 0.0,
+      "edge_output_max_abs_error": 0.0,
+      "node_gradient_max_abs_error": 8.881784197001252e-16,
+      "edge_gradient_max_abs_error": 0.0,
+      "parameter_gradient_max_abs_error": 0.0,
+      "batchnorm_buffers_match": true
+    }
+  ]
+}

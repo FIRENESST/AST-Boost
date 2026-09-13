@@ -1,0 +1,41 @@
+{
+  "purpose": "Three-seed replication of the corrected Peptides-struct training pipeline",
+  "dataset": "Peptides-struct",
+  "seeds": [42, 43, 44],
+  "methods": ["signnet_graphgps", "signnet_local", "kern", "full"],
+  "epochs": 35,
+  "warmup_epochs": 10,
+  "batch_size": 128,
+  "sampler": "random",
+  "precision": "bf16",
+  "selection": "best validation MAE for each completed run",
+  "reference_study": "runs/lrgb_struct_random35_seed42_20260910",
+  "reuse": {"seed": 42, "methods": ["signnet_local", "kern", "full"]},
+  "new_studies": [
+    {
+      "directory": "runs/lrgb_struct_signnet35_seed42_20260910",
+      "methods": ["signnet_graphgps"],
+      "seeds": [42]
+    },
+    {
+      "directory": "runs/lrgb_struct_replication35_seeds43_44_20260910",
+      "methods": ["signnet_graphgps", "signnet_local", "kern", "full"],
+      "seeds": [43, 44]
+    }
+  ],
+  "invariants": [
+    "Reuse the exact source and runner hashes from the reference study",
+    "Verify identical topology, targets and cached spectra across studies",
+    "Keep architecture, optimizer, frequency labels and spectral settings fixed",
+    "Report all planned results, including negative outcomes; no early stopping by score"
+  ],
+  "comparisons": [
+    {"target": "kern", "reference": "signnet_local", "hypothesis": "H2 within matched first-order control"},
+    {"target": "kern", "reference": "signnet_graphgps", "hypothesis": "performance against public SignNet source port"},
+    {"target": "full", "reference": "kern", "hypothesis": "H1 second-order field"}
+  ],
+  "reporting": "Mean and sample standard deviation, all paired differences, direction counts; three seeds are screening evidence, not a converged benchmark",
+  "decision": "Consistent benefits justify longer training; inconsistent or negative differences do not justify new spectral modules. Do not declare H1 or H2 established from this short screen.",
+  "test_evaluations": 0,
+  "git_commits": 0
+}

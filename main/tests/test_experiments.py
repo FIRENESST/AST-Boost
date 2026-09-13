@@ -10,7 +10,7 @@ import torch
 from ast_boost import ASTBoostPE, precompute_spectrum, prepare_spectrum_batch
 from ast_boost.experiments.data import GraphBank, build_payload, random_walk_diagonal
 from ast_boost.experiments.model import METHODS, GPSRegressor, MaskedBatchNorm
-from ast_boost.experiments.train import arguments, paired_summary, seed_all
+from ast_boost.experiments.train import arguments, cosine_with_warmup, paired_summary, seed_all
 
 
 def graphs():
@@ -160,6 +160,21 @@ def test_scheduler_arguments_are_explicit_and_defaults_are_preserved(tmp_path):
     assert defaults.scheduler == "plateau" and defaults.plateau_patience == 10
     assert defaults.min_lr == 1e-6
     assert cosine.scheduler == "cosine" and cosine.min_lr == 1e-5
+
+
+def test_graphgps_cosine_schedule_has_linear_warmup_and_half_cosine_decay():
+    parameter = torch.nn.Parameter(torch.tensor(1.0))
+    optimizer = torch.optim.AdamW([parameter], lr=1e-3)
+    scheduler = cosine_with_warmup(optimizer, warmup_epochs=2, epochs=6)
+    factors = [optimizer.param_groups[0]["lr"] / 1e-3]
+    for _ in range(6):
+        optimizer.step()
+        scheduler.step()
+        factors.append(optimizer.param_groups[0]["lr"] / 1e-3)
+    assert factors[0] == pytest.approx(1e-6)
+    assert factors[1:3] == pytest.approx([0.5, 1.0])
+    assert factors[4] == pytest.approx(0.5)
+    assert factors[-1] == pytest.approx(0.0)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")

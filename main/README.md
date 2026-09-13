@@ -21,6 +21,17 @@ use a matched GraphGPS budget and the protocol in
 [theory-to-implementation audit](docs/THEORY_AUDIT.md) for corrected mathematical
 claims, implementation boundaries, and measured synthetic GPU timings.
 
+Optional frequency-aware field readout, a separate complete-spectrum kernel,
+and a raw kernel-diagonal node channel are documented in the
+[spectral-information ablation](docs/MATH_FEATURES_20260905.md).
+The switches are `--frequency-labels eigenvalue`, `--kernel-spectrum all`, and
+`--kernel-diagonal`; the existing defaults remain available for reproduction.
+The full-kernel cache includes zero modes and leaves the PE/pair budgets unchanged.
+The completed 18-run study recommends starting with **eigenvalue labels alone**:
+three-seed validation MAE improved from 0.283042 to 0.277851 at 35 epochs (1.83%).
+The combined variant averaged 0.277484 but did not consistently beat labels alone.
+These are local validation results; the test split was not evaluated.
+
 ## Requirements and installation
 
 Python 3.10 or newer is required. The spectral core depends only on PyTorch,
@@ -71,7 +82,7 @@ instead when the host requires a different CUDA build.
 ```text
 main/
 ├── benchmarks/           # CUDA timing and peak-memory comparison
-├── configs/zinc/         # standalone configurations for the v0.3 variants
+├── configs/zinc|lrgb/    # human-readable mirrors of the frozen protocols
 ├── docs/                  # optimization decisions and recovery notes
 ├── src/ast_boost/        # spectral core and GraphGPS adapter
 └── tests/                # invariance, degeneracy, and permutation tests
@@ -105,11 +116,62 @@ configs/zinc/ast_kern.yaml
 configs/zinc/ast_full.yaml
 ```
 
-These configuration drafts target the ZINC subset, `k=8`, and the same
-GraphGPS-sized backbone; they are not yet wired into a GraphGym config loader.
-`ast_full.yaml` reduces the shared SignNet width so its additional second-order
-path can be compared with `kern` under a similar parameter budget. Dataset
-files and precomputed spectra are intentionally kept outside version control.
+These YAML files are protocol mirrors rather than executable GraphGym inputs;
+the executable source of truth is `benchmarks/experiment_graphgps_matrix.py`.
+Kern and Full now freeze the same labels, retained-spectrum kernel, GraphGPS
+compatible backbone, optimizer budget, and paired seeds. Dataset files and
+precomputed spectra are intentionally kept outside version control.
+
+The standalone experiment package also provides `--backbone graphgps`. It ports
+the public GraphGPS GINE+Transformer layer, ZINC RWSE/LapPE/SignNet encoders,
+SAN head, and cosine-with-warmup schedule from commit
+`28015707cbab7f8ad72bed0ee872d068ea59c94b` to the installed PyTorch 2.13 / PyG
+2.7 runtime. It does not claim to run the historical GraphGym trainer. The first
+baseline and H1/H2 screen is recorded in
+[`docs/GRAPHGPS_SCREEN_20260907.md`](docs/GRAPHGPS_SCREEN_20260907.md).
+
+## LRGB Peptides experiments
+
+Peptides-func/struct now use the public GraphGPS Peptides architecture:
+`CustomGatedGCN+Transformer`, 4 × 96, 4 heads, mean pooling, OGB-style atom/bond
+encoders, 10-frequency combinatorial LapPE, and the official AdamW/warmup/cosine
+budget. The scalable cache pads only the current minibatch and shares verified
+topology/spectrum shards between the two Peptides tasks.
+Training now uses random graph permutations; `--sampler sortish` is an explicit
+padding-efficiency ablation. Resume verifies target and cached-spectrum fingerprints.
+
+```powershell
+.\.venv\Scripts\python.exe benchmarks\experiment_lrgb_matrix.py `
+  --dataset Peptides-struct --output runs\peptides-struct-frozen
+```
+
+The default matrix is public LapPE, public SignNet, matched local first-order,
+Kern, and Full over seeds 42–46 for 200 epochs. The test split is not instantiated.
+The historical fixed-length-group 35-epoch seed-42 screen found MAE 0.514281,
+0.523943, and 0.526006 for the matched first-order, Kern, and Full paths. This
+short single-seed result does not support H2 or H1 and is not a converged benchmark;
+it predates the random-sampling correction. Peptides-func AP now groups tied scores;
+old functional smoke scores must be recomputed before accuracy comparisons.
+See the [LRGB screen](docs/LRGB_SCREEN_20260907.md) and the protocol mirrors in
+[`configs/lrgb`](configs/lrgb).
+
+The [random-sampling correction](docs/LRGB_SAMPLING_20260910.md) reruns the same
+35-epoch seed-42 budget. Matched first-order / Kern / Full validation MAE improves
+to **0.249446 / 0.250108 / 0.249662**. The large gain comes from the training
+pipeline; the small within-protocol differences do not establish H2 or H1.
+AP now handles tied predictions, and recovery reconstructs logs/best checkpoints
+from the committed last checkpoint. These are validation-only screening results.
+
+The completed [three-seed replication](docs/LRGB_REPLICATION_20260910.md)
+(42/43/44, 35 epochs, completed September 11) gives mean validation MAE of
+**0.254732 / 0.250739 / 0.250774 / 0.250180** for public SignNet source port /
+matched first-order / Kern / Full. Kern does not improve the matched control on
+average; Full improves Kern by 0.000594 but wins only two of three pairs.
+These results do not yet establish H2 or stable H1. Preserve all variants and
+prioritize a matched longer training budget before adding spectral modules.
+The public SignNet and local GatedGCN source ports also passed CPU float64
+forward/gradient checks against the pinned upstream class implementations;
+this does not establish full GraphGym runtime parity.
 
 The public API follows the v0.3 interface sketch:
 

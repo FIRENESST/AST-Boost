@@ -19,7 +19,8 @@ import numpy as np
 import torch
 
 from .data import load_zinc_banks
-from .model import METHODS, GPSRegressor
+from .graphgps import GRAPHGPS_REFERENCE_COMMIT, GRAPHGPS_REFERENCE_URL
+from .model import ALL_METHODS, BACKBONES, GPSRegressor
 
 PROJECT = Path(__file__).resolve().parents[3]
 
@@ -29,7 +30,7 @@ def arguments(argv=None):
     parser.add_argument(
         "--methods",
         nargs="+",
-        choices=METHODS,
+        choices=ALL_METHODS,
         default=["rwse", "lappe", "signnet_local", "kern", "full"],
     )
     parser.add_argument("--seeds", nargs="+", type=int, default=[42, 43, 44, 45, 46])
@@ -40,14 +41,24 @@ def arguments(argv=None):
     parser.add_argument("--heads", type=int, default=4)
     parser.add_argument("--pe-dim", type=int, default=16)
     parser.add_argument("--sign-hidden", type=int, default=32)
+    parser.add_argument("--sign-layers", type=int, default=2)
     parser.add_argument("--node-layout", choices=["compact", "padded"], default="compact")
+    parser.add_argument("--backbone", choices=BACKBONES, default="compact")
     parser.add_argument("--field-scaling", choices=["none", "size"], default="none")
+    parser.add_argument(
+        "--frequency-labels", choices=["none", "blind", "eigenvalue"], default="none"
+    )
+    parser.add_argument("--kernel-spectrum", choices=["pe", "all"], default="pe")
+    parser.add_argument("--kernel-diagonal", action="store_true")
     parser.add_argument("--signal-backend", choices=["sparse", "dense"], default="sparse")
     parser.add_argument("--k", type=int, default=8, help="minimum retained nonzero frequencies")
     parser.add_argument("--pairs", type=int, default=4, help="second-order low-frequency cutoff k0")
     parser.add_argument("--rw-steps", type=int, default=20)
     parser.add_argument("--lr", type=float, default=0.001)
-    parser.add_argument("--scheduler", choices=["plateau", "cosine"], default="plateau")
+    parser.add_argument(
+        "--scheduler", choices=["plateau", "cosine", "cosine_warmup"], default="plateau"
+    )
+    parser.add_argument("--warmup-epochs", type=int, default=50)
     parser.add_argument("--plateau-patience", type=int, default=10)
     parser.add_argument("--min-lr", type=float, default=1e-6)
     parser.add_argument("--weight-decay", type=float, default=1e-5)
@@ -87,6 +98,20 @@ def autocast(args):
         dtype=torch.float16 if args.precision == "fp16" else torch.bfloat16,
         enabled=args.precision != "fp32",
     )
+
+
+def cosine_with_warmup(optimizer, *, warmup_epochs: int, epochs: int):
+    """GraphGPS/HuggingFace half-cosine schedule, stepped once per epoch."""
+    if not 0 <= warmup_epochs < epochs:
+        raise ValueError("warmup epochs must satisfy 0 <= warmup < total epochs")
+
+    def factor(step: int) -> float:
+        if step < warmup_epochs:
+            return max(1e-6, step / max(1, warmup_epochs))
+        progress = (step - warmup_epochs) / max(1, epochs - warmup_epochs)
+        return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
 
 
 def atomic_json(path, data):
@@ -259,11 +284,16 @@ def run_one(method, seed, banks, args, study_hash):
         heads=args.heads,
         pe_dim=args.pe_dim,
         sign_hidden=args.sign_hidden,
+        sign_layers=getattr(args, "sign_layers", 2),
         attention_dropout=args.attention_dropout,
         kernel_eps=args.kernel_eps,
         node_layout=args.node_layout,
         field_scaling=args.field_scaling,
         signal_backend=args.signal_backend,
+        frequency_labels=getattr(args, "frequency_labels", "none"),
+        kernel_spectrum=getattr(args, "kernel_spectrum", "pe"),
+        kernel_diagonal=getattr(args, "kernel_diagonal", False),
+        backbone=getattr(args, "backbone", "compact"),
         k=args.k,
         pairs=args.pairs,
         rw_steps=args.rw_steps,
@@ -278,9 +308,13 @@ def run_one(method, seed, banks, args, study_hash):
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, factor=0.5, patience=args.plateau_patience, min_lr=args.min_lr
         )
-    else:
+    elif args.scheduler == "cosine":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=args.epochs, eta_min=args.min_lr
+        )
+    else:
+        scheduler = cosine_with_warmup(
+            optimizer, warmup_epochs=args.warmup_epochs, epochs=args.epochs
         )
     scaler = torch.amp.GradScaler(torch.device(args.device).type, enabled=args.precision == "fp16")
     start_epoch, best, best_epoch = 1, float("inf"), 0
@@ -424,8 +458,12 @@ def main(argv=None):
         raise ValueError("epochs, batch and threads must be positive; limit must be nonnegative")
     if args.plateau_patience < 0 or not 0 <= args.min_lr < args.lr:
         raise ValueError("patience must be nonnegative and 0 <= min-lr < lr")
-    if min(args.k, args.rw_steps) < 1 or args.pairs < 0:
-        raise ValueError("k and rw-steps must be positive; pairs must be nonnegative")
+    if args.scheduler == "cosine_warmup" and not 0 <= args.warmup_epochs < args.epochs:
+        raise ValueError("warmup epochs must satisfy 0 <= warmup < total epochs")
+    if min(args.k, args.rw_steps, args.sign_layers) < 1 or args.pairs < 0:
+        raise ValueError(
+            "k, rw-steps, and sign-layers must be positive; pairs must be nonnegative"
+        )
     if len(set(args.seeds)) != len(args.seeds) or len(set(args.methods)) != len(args.methods):
         raise ValueError("methods and seeds must not repeat")
     torch.set_num_threads(args.threads)
@@ -465,7 +503,17 @@ def main(argv=None):
                     "python": platform.python_version(),
                     "gpu": torch.cuda.get_device_name() if torch.cuda.is_available() else None,
                 },
-                "scope": "local GPS-style pilot, NOT official GraphGPS/SignNet reproduction",
+                "scope": (
+                    "GraphGPS layer-compatible standalone experiment; not GraphGym trainer or "
+                    "published-score reproduction"
+                    if args.backbone == "graphgps"
+                    else "local GPS-style pilot, NOT official GraphGPS/SignNet reproduction"
+                ),
+                "graphgps_reference": (
+                    {"repository": GRAPHGPS_REFERENCE_URL, "commit": GRAPHGPS_REFERENCE_COMMIT}
+                    if args.backbone == "graphgps"
+                    else None
+                ),
                 "cuda_scatter_bitwise_deterministic": False,
                 "full_policy": "Full must be retained; no automatic elimination",
             },
@@ -478,6 +526,8 @@ def main(argv=None):
         pairs=args.pairs,
         rw_steps=args.rw_steps,
         dense_signals=args.signal_backend == "dense",
+        kernel_spectrum=args.kernel_spectrum,
+        splits=("train", "val", "test") if args.evaluate_test else ("train", "val"),
     )
     atomic_json(
         args.output / "dataset.json", {split: bank.metadata for split, bank in banks.items()}

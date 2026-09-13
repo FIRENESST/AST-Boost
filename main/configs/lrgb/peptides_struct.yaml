@@ -1,0 +1,44 @@
+status: frozen_protocol_mirror
+executable: benchmarks/experiment_lrgb_matrix.py
+dataset:
+  name: Peptides-struct
+  splits: [train, val]
+  test_policy: never instantiate until the 200-epoch matrix is frozen
+  metric: mae
+model:
+  backbone: CustomGatedGCN+Transformer
+  hidden_dim: 96
+  layers: 4
+  heads: 4
+  attention_dropout: 0.5
+  pooling: mean
+  output_dim: 11
+  lap_pe:
+    laplacian: combinatorial
+    include_zero: true
+    frequencies: 10
+    dim: 16
+matrix:
+  methods: [lappe_graphgps, signnet_graphgps, signnet_local, kern, full]
+  seeds: [42, 43, 44, 45, 46]
+ast:
+  sign_hidden: 32
+  sign_layers: 2
+  frequency_labels: eigenvalue
+  field_scaling: size
+  pair_cutoff: 4
+  kernel_spectrum: pe
+  kernel_diagonal: false
+training:
+  epochs: 200
+  batch_size: 128
+  sampler: random
+  optimizer: AdamW
+  learning_rate: 0.0003
+  weight_decay: 0.0
+  scheduler: cosine_with_warmup
+  warmup_epochs: 10
+  clip_grad_norm: 1.0
+  precision: bf16
+selection: best validation MAE
+scope: standalone source-compatible port, not the historical GraphGym runtime

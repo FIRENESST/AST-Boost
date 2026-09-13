@@ -173,6 +173,40 @@ if torch is not None:
                 nn.GELU(),
                 nn.Linear(hidden_dim, out_dim),
             )
+            self.label_mode = "none"
+            self.field_mixer = None
+
+        def enable_labels(self, mode: str) -> None:
+            """Mix invariant states with block/pair eigenvalues before the field sum.
+
+            ``blind`` has exactly the same parameters and operations as
+            ``eigenvalue`` but receives zero labels, for a capacity control.
+            Configure once before constructing an optimizer.
+            """
+            if mode not in {"none", "blind", "eigenvalue"}:
+                raise ValueError("label mode must be none, blind, or eigenvalue")
+            self.label_mode = mode
+            self.field_mixer = (
+                None
+                if mode == "none"
+                else nn.Sequential(
+                    nn.Linear(self.hidden_dim + 2, self.hidden_dim),
+                    nn.GELU(),
+                    nn.Linear(self.hidden_dim, self.hidden_dim),
+                )
+            )
+
+        def _mix_labels(self, invariant: Tensor, labels: Tensor | None) -> Tensor:
+            if self.field_mixer is None:
+                return invariant
+            expected = (*invariant.shape[:-2], 2)
+            if labels is None or labels.shape != expected:
+                raise ValueError(f"frequency labels must have shape {expected}; rebuild the cache")
+            labels = labels.to(device=invariant.device, dtype=invariant.dtype)
+            if self.label_mode == "blind":
+                labels = torch.zeros_like(labels)
+            labels = labels.unsqueeze(-2).expand(*invariant.shape[:-1], 2)
+            return self.field_mixer(torch.cat((invariant, labels), dim=-1))
 
         def encode_invariant(self, fields: Tensor, edge_index: Tensor) -> Tensor:
             """Return per-field invariant hidden states shaped ``(F,N,H)``."""
@@ -186,22 +220,24 @@ if torch is not None:
             positive, negative = encoded.chunk(2, dim=0)
             return positive + negative
 
-        def readout(self, invariant: Tensor) -> Tensor:
+        def readout(self, invariant: Tensor, labels: Tensor | None = None) -> Tensor:
             """Aggregate invariant field states and apply this encoder's readout."""
             if invariant.ndim != 3 or invariant.shape[-1] != self.hidden_dim:
                 raise ValueError("invariant must have shape (num_fields, num_nodes, hidden)")
             if invariant.shape[0] == 0:
                 return invariant.new_zeros((invariant.shape[1], self.out_dim))
-            return self.rho(invariant.sum(dim=0))
+            return self.rho(self._mix_labels(invariant, labels).sum(dim=0))
 
-        def forward(self, fields: Tensor, edge_index: Tensor) -> Tensor:
+        def forward(
+            self, fields: Tensor, edge_index: Tensor, labels: Tensor | None = None
+        ) -> Tensor:
             """Return one invariant node feature vector per node.
 
             ``fields`` is ``(num_fields, N)``.  An empty set of legal fields is
             represented as ``(0, N)`` and deterministically returns zeros, rather
             than injecting the output bias of ``rho`` into a graph with no fields.
             """
-            return self.readout(self.encode_invariant(fields, edge_index))
+            return self.readout(self.encode_invariant(fields, edge_index), labels)
 
         def encode_padded_invariant(
             self,
@@ -225,7 +261,9 @@ if torch is not None:
             positive, negative = encoded.chunk(2, dim=0)
             return (positive + negative).reshape(num_fields, batch_size, max_nodes, self.hidden_dim)
 
-        def readout_padded(self, invariant: Tensor, field_mask: Tensor) -> Tensor:
+        def readout_padded(
+            self, invariant: Tensor, field_mask: Tensor, labels: Tensor | None = None
+        ) -> Tensor:
             """Apply a field mask and this encoder's readout to fused padded states."""
             if invariant.ndim != 4 or invariant.shape[-1] != self.hidden_dim:
                 raise ValueError("invariant must have shape (num_fields, batch, nodes, hidden)")
@@ -234,6 +272,9 @@ if torch is not None:
                 raise ValueError("field_mask must have shape (batch, num_fields)")
             if num_fields == 0:
                 return invariant.new_zeros((batch_size, max_nodes, self.out_dim))
+            if labels is not None:
+                labels = labels.transpose(0, 1)
+            invariant = self._mix_labels(invariant, labels)
             if self.bmm_field_reduction:
                 # The mask is a per-graph row vector. Batched matrix
                 # multiplication performs the same independent field sum while
@@ -256,10 +297,11 @@ if torch is not None:
             field_mask: Tensor,
             *,
             adjacency: Tensor | None = None,
+            labels: Tensor | None = None,
         ) -> Tensor:
             """Encode padded ``(B,F,N)`` fields with one fused disjoint-graph pass."""
             invariant = self.encode_padded_invariant(fields, edge_index, adjacency=adjacency)
-            return self.readout_padded(invariant, field_mask)
+            return self.readout_padded(invariant, field_mask, labels)
 
         def first_order(
             self,
@@ -280,7 +322,12 @@ if torch is not None:
             device = device or parameter.device
             dtype = dtype or parameter.dtype
             fields = torch.as_tensor(first_order_fields(spectrum), device=device, dtype=dtype)
-            return self(fields, edge_index.to(device=device, dtype=torch.long))
+            labels = torch.tensor(spectrum.block_means.copy(), device=device, dtype=dtype)
+            return self(
+                fields,
+                edge_index.to(device=device, dtype=torch.long),
+                labels[:, None].expand(-1, 2),
+            )
 
 
 else:

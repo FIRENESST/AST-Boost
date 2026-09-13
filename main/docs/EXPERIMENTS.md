@@ -14,6 +14,42 @@ Full 保留为正式可选模型，代码、配置、最佳 checkpoint 和运行
 [数学/代码优化记录](MATH_CODE_OPTIMIZATION_20260904.md)。
 B128/35 的后续吞吐、精度与反例筛查见
 [继续优化记录](NEXT_OPTIMIZATION_20260904.md)。
+频率标签、全谱核和核对角的同机配对实验见
+[谱信息补全实验](MATH_FEATURES_20260905.md)。本轮包含等参数的无频率标签控制组。
+2026-09-07 已新增 GraphGPS 兼容骨干、公开 RWSE/LapPE/SignNet 编码和预热余弦协议，
+并完成首轮可信基线及 H1/H2 筛查，见
+[GraphGPS 筛查报告](GRAPHGPS_SCREEN_20260907.md)。五种子强 RWSE 对照未验证谱核收益，
+因此当前默认转为 `rwse_graphgps`，停止继续搜索谱模块。
+
+LRGB Peptides 数据、指标、OGB 风格多列特征编码和公开
+`CustomGatedGCN+Transformer` 现已接入。变长图使用逐图 CPU shard、minibatch 动态
+填充；训练默认随机置换，`sortish` 仅作显式消融。func/struct 经逐 shard 拓扑哈希后共享谱缓存。完整
+Peptides-struct train/val 的 35 epoch、seed 42 筛查见
+[LRGB 报告](LRGB_SCREEN_20260907.md)：matched first-order / Kern / Full 最佳 MAE
+分别为 0.514281 / 0.523943 / 0.526006。旧运行使用固定长度分组，组内成员没有逐轮变化；
+它未支持 H2 或 H1，但不能替代修正采样后的比较，也不是 200 epoch 多种子结论。
+测试集评估仍为 0。
+
+2026-09-10 的[随机采样修正实验](LRGB_SAMPLING_20260910.md)保持相同的 35 epoch、
+seed 42、B128 和模型容量。一阶对照 / Kern / Full 的最佳验证 MAE 分别降为
+0.249446 / 0.250108 / 0.249662。主要收益来自采样修正；三种模型之间的小差值尚不支持
+稳定的谱模块收益。AP 并列分数、断点一致性和数据指纹检查也已补齐。
+
+2026-09-11 已完成冻结的[三种子复核](LRGB_REPLICATION_20260910.md)：
+公开 SignNet 移植 / 一阶对照 / Kern / Full 的平均验证 MAE 为
+0.254732 / 0.250739 / 0.250774 / 0.250180。
+Kern 相对一阶对照平均差 +0.000035，只有 1/3 配对获胜，H2 尚未获得支持。
+Full 相对 Kern 平均差 -0.000594，2/3 配对获胜；保留 Full，但不能称为稳定 H1 收益。
+三组 AST 比公开 SignNet 的均值低，不能单独证明谱核有效，因为一阶对照也有同样趋势。
+下一阶段优先验证训练预算：固定同一配置，从头运行更长的配对训练，再判断 MAE 与模块收益。
+不能把 35 epoch 余弦已衰减结束的 checkpoint 直接续到 200 epoch，并称为原定 200 epoch 协议。
+本轮不新增谱模块、不触碰测试集，也不把三个种子的标准差解释为显著性证据。
+
+2026-09-13 补强完成态恢复检查：除协议哈希外，核对运行身份、完整 epoch 历史、
+最佳验证分数及对应 epoch、发布日志和最佳 checkpoint 权重；缺失或不一致即拒绝复用，
+不自动覆盖历史证据。已有 13 次完整运行通过只读检查，文件哈希均未变化。
+训练公式、模型及已有 MAE 未变；runner 源码哈希已变化，历史实验仍应使用各自
+保存的 runner 快照复现，新实验应生成新 manifest，不能修改旧 manifest 来绕过检查。
 
 当前任务是建立可重复的实际训练比较，并完成短程、多种子筛查；不是宣称
 已经复现论文的收敛结果，也不是一次性证明或否定二阶场假设 H1。
@@ -22,9 +58,10 @@ B128/35 的后续吞吐、精度与反例筛查见
 
 - 官方 ZINC-subset：10,000 train / 1,000 val / 1,000 test；不混合划分。
 - 输入：离散原子类别和键类别，图回归，L1 损失、验证 MAE。
-- 共同骨干：10 层、宽 64、4 头，GINE 与 Transformer 并行分支，
-  BatchNorm、残差、2d 前馈网络、sum pooling。这是本地 GPS-style 实现，
-  不是安装了整个 GraphGPS/GraphGym 后复现其官方结果。
+- 旧 `compact` 骨干仍用于复现 2026-09-03 至 09-05 的本地试验。
+  新 `--backbone graphgps` 使用公开 GraphGPS commit `2801570` 的 GINE 与
+  `MultiheadAttention` 并行数据流、BatchNorm、残差、2d 前馈网络和 SAN head；
+  训练循环仍为本项目 standalone runner，不冒充历史 GraphGym 运行。
 - `rwse`：完整随机游走转移矩阵的第 1–20 次幂对角；不是截断谱近似。
 - `lappe`：前 8 个正特征值对应的列，训练期每图、每频率随机反号。
 - `signnet_local`：本项目的一阶 SignNet + 简并投影对角，关闭相对核；
@@ -65,7 +102,10 @@ GINE、注意力及 SignNet 复用同一份节点/边布局；BatchNorm 只计�
 
 CLI 现在显式提供 `--k`、`--pairs`、`--rw-steps`，默认仍为 8/4/20。
 `pairs` 指 k0 频率截止，不是最终 pair 数；例如 k0=4 最多有 10 个含对角项的 pair。
-不同预算使用独立 cache 文件，保留原缓存。缓存内容算法没有改变，版本仍为 v1。
+不同预算使用独立 cache 文件，保留原缓存。2026-09-07 起训练缓存为 v3，
+在 v2 字段频率标签和可选完整核谱之外，增加官方基线专用的组合拉普拉斯谱
+（包含零模）；AST 谱与公开基线谱不混用。原有 v1/v2 缓存仍保留。
+主训练入口默认只加载 train/val；`--evaluate-test` 才加载和评估 test。
 
 新 `forward_packed` 与原 padded API 的值和梯度一致性均受回归测试保护，
 没有用关闭二阶场或减少合法 pair 数量来“加速” Full。
@@ -83,6 +123,19 @@ CLI 现在显式提供 `--k`、`--pairs`、`--rw-steps`，默认仍为 8/4/20。
 
 ```powershell
 .\.venv\Scripts\python.exe -m ast_boost.experiments.train --output runs/zinc-pilot-5x5-20260903 --epochs 5 --seeds 42 43 44 45 46
+```
+
+冻结的 GraphGPS 兼容矩阵使用：
+
+```powershell
+.\.venv\Scripts\python.exe benchmarks\experiment_graphgps_matrix.py --output runs\graphgps-zinc-frozen --epochs 2000 --warmup-epochs 50 --batch-size 32 --seeds 42 43 44 45 46
+```
+
+冻结的 LRGB 矩阵使用：
+
+```powershell
+.\.venv\Scripts\python.exe benchmarks\experiment_lrgb_matrix.py --dataset Peptides-struct --output runs\peptides-struct-frozen
+.\.venv\Scripts\python.exe benchmarks\experiment_lrgb_matrix.py --dataset Peptides-func --output runs\peptides-func-frozen
 ```
 
 `manifest.json` 保存参数、运行环境、源文件 SHA256 和研究范围；`dataset.json`

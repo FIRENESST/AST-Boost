@@ -192,7 +192,7 @@ if torch is not None:
                 persistent=False,
             )
 
-        def response(self, eigenvalues: Tensor) -> Tensor:
+        def response(self, eigenvalues: Tensor, *, centered: bool = False) -> Tensor:
             """Return responses shaped ``(..., heads, k)``."""
             x = (eigenvalues / self.domain_max).clamp(0.0, 1.0)
             indices = self._bernstein_indices
@@ -202,11 +202,14 @@ if torch is not None:
                 * x.unsqueeze(-1).pow(indices)
                 * (1.0 - x).unsqueeze(-1).pow(self.degree - indices)
             )
+            learned = self.coefficients.to(dtype=basis.dtype)
+            if centered:
+                learned = learned - learned[:, :1]
             if eigenvalues.ndim == 1:
                 # Keep the small single-graph GEMM in its faster HxD @ DxK
                 # orientation; the batched path below handles (...,K,D).
-                return self.coefficients.to(dtype=basis.dtype) @ basis.T
-            return torch.matmul(basis, self.coefficients.to(dtype=basis.dtype).T).movedim(-1, -2)
+                return learned @ basis.T
+            return torch.matmul(basis, learned.T).movedim(-1, -2)
 
         def raw_kernel(
             self,
@@ -241,6 +244,8 @@ if torch is not None:
             eigenvalues: Tensor,
             eigenvectors: Tensor,
             frequency_mask: Tensor,
+            *,
+            complete: bool = False,
         ) -> Tensor:
             """Build ``(B,H,N,N)`` kernels for an already padded spectrum batch."""
             if eigenvalues.ndim != 2 or eigenvectors.ndim != 3:
@@ -256,10 +261,26 @@ if torch is not None:
                 if eigenvectors.dtype in {torch.float16, torch.bfloat16}:
                     eigenvectors = eigenvectors.float()
                 eigenvalues = eigenvalues.to(dtype=eigenvectors.dtype)
-                weights = self.response(eigenvalues)
+                weights = self.response(eigenvalues, centered=complete)
+                if complete:
+                    if eigenvectors.shape[1] != eigenvectors.shape[2]:
+                        raise ValueError("complete kernel requires all N eigenvectors")
+                    # g(L) = g(0)I + U diag(g(lambda)-g(0)) U.T.
+                    # Form the constant response analytically: otherwise FP32
+                    # U U.T roundoff becomes a spurious normalized bias at init.
+                    offset = self.coefficients[:, 0].to(dtype=weights.dtype)
                 weights = weights * frequency_mask[:, None, :].to(dtype=weights.dtype)
                 weighted_vectors = eigenvectors[:, None, :, :] * weights[:, :, None, :]
-                return torch.matmul(weighted_vectors, eigenvectors.transpose(-1, -2)[:, None, :, :])
+                result = torch.matmul(
+                    weighted_vectors, eigenvectors.transpose(-1, -2)[:, None, :, :]
+                )
+                if complete:
+                    result = (
+                        result
+                        + offset[None, :, None, None]
+                        * torch.diag_embed(frequency_mask.to(dtype=result.dtype))[:, None]
+                    )
+                return result
 
         def forward_padded(
             self,
@@ -270,6 +291,10 @@ if torch is not None:
         ) -> Tensor:
             """Return standardized/scaled bias for a padded spectrum batch."""
             kernels = self.raw_kernel_padded(eigenvalues, eigenvectors, frequency_mask)
+            return self.bias_from_raw_padded(kernels, valid_nodes)
+
+        def bias_from_raw_padded(self, kernels: Tensor, valid_nodes: Tensor) -> Tensor:
+            """Reuse a raw kernel for both node diagonals and attention bias."""
             if valid_nodes.shape != (kernels.shape[0], kernels.shape[-1]):
                 raise ValueError("valid_nodes must have shape (batch, max_nodes)")
             pair_mask = valid_nodes[:, :, None] & valid_nodes[:, None, :]
@@ -291,6 +316,9 @@ if torch is not None:
             dtype: torch.dtype | None = None,
         ) -> Tensor:
             kernels = self.raw_kernel(spectrum, device=device, dtype=dtype)
+            return self.bias_from_raw(kernels)
+
+        def bias_from_raw(self, kernels: Tensor) -> Tensor:
             if self.standardize:
                 n = kernels.shape[-1]
                 mask = ~torch.eye(n, dtype=torch.bool, device=kernels.device)

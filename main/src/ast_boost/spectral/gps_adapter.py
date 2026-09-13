@@ -63,6 +63,9 @@ if torch is not None:
             fuse_shared_fields: bool = True,
             non_blocking: bool = True,
             field_scaling: Literal["none", "size"] = "none",
+            frequency_labels: Literal["none", "blind", "eigenvalue"] = "none",
+            kernel_spectrum: Literal["pe", "all"] = "pe",
+            kernel_diagonal: bool = False,
         ) -> None:
             super().__init__()
             if variant not in {"lite", "kern", "full"}:
@@ -80,6 +83,13 @@ if torch is not None:
                 raise ValueError("field_scaling must be none or size")
             self.field_scaling = field_scaling
             self.fuse_shared_fields = fuse_shared_fields
+            if kernel_spectrum not in {"pe", "all"}:
+                raise ValueError("kernel_spectrum must be pe or all")
+            if frequency_labels not in {"none", "blind", "eigenvalue"}:
+                raise ValueError("frequency_labels must be none, blind, or eigenvalue")
+            if variant == "lite" and frequency_labels != "none":
+                raise ValueError("frequency labels require a SignNet variant")
+            self.kernel_spectrum = kernel_spectrum
             if token_dim is not None and token_dim <= 0:
                 raise ValueError("token_dim must be positive when provided")
             self.kernel = SpectralKernelBias(
@@ -120,6 +130,17 @@ if torch is not None:
                 if token_dim is not None
                 else None
             )
+            # Add new parameters only after all legacy modules are initialized,
+            # preserving paired initialization of their shared parameters.
+            if variant != "lite":
+                self.first_order_encoder.enable_labels(frequency_labels)
+                if variant == "full":
+                    self.second_order_encoder.enable_labels(frequency_labels)
+            self.diagonal_projection = (
+                nn.Linear(heads, self.appended_dim, bias=False) if kernel_diagonal else None
+            )
+            if self.diagonal_projection is not None:
+                nn.init.zeros_(self.diagonal_projection.weight)
 
         @property
         def appended_dim(self) -> int:
@@ -156,7 +177,8 @@ if torch is not None:
             fields = self._second_order_fields(spectrum)
             if self.field_scaling == "size":
                 fields = fields * spectrum.num_nodes
-            return self.second_order_encoder(fields, edge_index)
+            labels = spectrum.clamped_eigenvalues[spectrum.pairs_for(self.k0_pairs)]
+            return self.second_order_encoder(fields, edge_index, labels)
 
         def _second_order_fields(self, spectrum: TorchSpectrum) -> Tensor:
             vectors = spectrum.eigenvectors
@@ -173,7 +195,44 @@ if torch is not None:
             fields = spectrum.first_order
             if self.field_scaling == "size":
                 fields = fields * spectrum.num_nodes**0.5
-            return self.first_order_encoder(fields, edge_index)
+            return self.first_order_encoder(fields, edge_index, spectrum.first_order_labels)
+
+        def _raw_kernel(self, prepared: TorchSpectrum) -> Tensor:
+            if self.kernel_spectrum == "pe":
+                return self.kernel.raw_kernel(prepared)
+            if prepared.kernel_eigenvectors is None:
+                raise ValueError("all-spectrum kernel requires a rebuilt complete kernel cache")
+            return self.kernel.raw_kernel_padded(
+                prepared.kernel_eigenvalues[None],
+                prepared.kernel_eigenvectors[None],
+                prepared.kernel_frequency_mask[None],
+                complete=True,
+            )[0]
+
+        def _raw_kernel_padded(self, prepared: TorchSpectrumBatch) -> Tensor:
+            if self.kernel_spectrum == "all":
+                if prepared.kernel_eigenvectors is None:
+                    raise ValueError("all-spectrum kernel requires a rebuilt complete kernel cache")
+                return self.kernel.raw_kernel_padded(
+                    prepared.kernel_eigenvalues,
+                    prepared.kernel_eigenvectors,
+                    prepared.kernel_frequency_mask,
+                    complete=True,
+                )
+            values = (
+                prepared.clamped_eigenvalues if self.kernel.block_clamp else prepared.eigenvalues
+            )
+            return self.kernel.raw_kernel_padded(
+                values, prepared.eigenvectors, prepared.frequency_mask
+            )
+
+        def _add_kernel_diagonal(self, node_pe: Tensor, raw_kernel: Tensor) -> Tensor:
+            if self.diagonal_projection is None:
+                return node_pe
+            diagonal = raw_kernel.diagonal(dim1=-2, dim2=-1).transpose(-1, -2)
+            return node_pe + self.diagonal_projection(
+                diagonal.to(dtype=self.diagonal_projection.weight.dtype)
+            )
 
         def _match_parameter_dtype(self, x: Tensor) -> Tensor:
             """Make direct fp16/bf16 calls safe outside an autocast context."""
@@ -258,8 +317,13 @@ if torch is not None:
                 invariant = self.first_order_encoder.encode_invariant(
                     torch.cat((first_fields, second_fields), dim=0), local_edges
                 )
-                first = self.first_order_encoder.readout(invariant[:first_count])
-                second = self.second_order_encoder.readout(invariant[first_count:])
+                first = self.first_order_encoder.readout(
+                    invariant[:first_count], prepared.first_order_labels
+                )
+                second = self.second_order_encoder.readout(
+                    invariant[first_count:],
+                    prepared.clamped_eigenvalues[prepared.pairs_for(self.k0_pairs)],
+                )
                 node_pe = torch.cat((first, second), dim=-1)
             else:
                 first = self._first_order_features(prepared, local_edges)
@@ -267,7 +331,9 @@ if torch is not None:
                 if self.variant == "full":
                     second = self._second_order_features(prepared, local_edges)
                     node_pe = torch.cat((first, second), dim=-1)
-            bias = self.kernel(prepared, device=x.device, dtype=x.dtype)
+            raw_kernel = self._raw_kernel(prepared)
+            bias = self.kernel.bias_from_raw(raw_kernel)
+            node_pe = self._add_kernel_diagonal(node_pe, raw_kernel)
             tokens = torch.cat([x, node_pe], dim=-1)
             if self.token_fusion is not None:
                 tokens = self.token_fusion(tokens)
@@ -515,10 +581,14 @@ if torch is not None:
                         adjacency=dense_adjacency,
                     )
                     first = self.first_order_encoder.readout_padded(
-                        invariant[:first_count], prepared.first_order_mask
+                        invariant[:first_count],
+                        prepared.first_order_mask,
+                        prepared.first_order_labels,
                     )
                     second = self.second_order_encoder.readout_padded(
-                        invariant[first_count:], prepared.second_order_mask
+                        invariant[first_count:],
+                        prepared.second_order_mask,
+                        prepared.second_order_labels,
                     )
                     node_pe = torch.cat((first, second), dim=-1)
                 else:
@@ -527,6 +597,7 @@ if torch is not None:
                         padded_edges,
                         prepared.first_order_mask,
                         adjacency=dense_adjacency,
+                        labels=prepared.first_order_labels,
                     )
                     node_pe = first
                     if self.variant == "full":
@@ -535,22 +606,22 @@ if torch is not None:
                             padded_edges,
                             prepared.second_order_mask,
                             adjacency=dense_adjacency,
+                            labels=prepared.second_order_labels,
                         )
                         node_pe = torch.cat((first, second), dim=-1)
 
-            kernel_values = (
-                prepared.clamped_eigenvalues if self.kernel.block_clamp else prepared.eigenvalues
+            raw_kernel = (
+                self._raw_kernel_padded(prepared)
+                if (compute_bias or self.diagonal_projection is not None)
+                else None
             )
             padded_bias = (
-                self.kernel.forward_padded(
-                    kernel_values,
-                    prepared.eigenvectors,
-                    prepared.frequency_mask,
-                    prepared.valid_nodes,
-                )
+                self.kernel.bias_from_raw_padded(raw_kernel, prepared.valid_nodes)
                 if compute_bias
                 else None
             )
+            if self.diagonal_projection is not None:
+                node_pe = self._add_kernel_diagonal(node_pe, raw_kernel)
             padded_tokens = torch.cat((x, node_pe), dim=-1)
             if self.token_fusion is not None:
                 padded_tokens = self.token_fusion(padded_tokens)

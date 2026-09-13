@@ -1,105 +1,64 @@
-# AST-Kern: first-order SignNet plus a block-safe filtered spectral kernel.
+# AST-Kern protocol mirror. The executable source of truth is
+# benchmarks/experiment_graphgps_matrix.py; this YAML is intentionally not a
+# GraphGym input file.
 experiment:
-  name: zinc_ast_kern
-  seed: 42
-  deterministic: true
+  name: zinc_ast_kern_graphgps
+  status: protocol_mirror
+  seeds: [42, 43, 44, 45, 46]
+  graphgps_reference_commit: 28015707cbab7f8ad72bed0ee872d068ea59c94b
 
 data:
   name: ZINC
-  root: data/ZINC
   subset: true
-  task: graph_regression
-  target: mae
-  num_workers: 4
-  pin_memory: true
-  persistent_workers: true
+  splits: [train, val]
+  test_access: disabled_until_protocol_freeze
 
 precompute:
-  enabled: true
-  cache_dir: .cache/zinc/spectral_k8_v2
+  cache_version: 3
   laplacian: sym
   k: 8
   skip_zero: true
-  zero_tolerance: 1.0e-8
-  isolated_degree: 1.0e-6
-  dense_threshold: 256
-  sparse_solver:
-    sigma: -1.0e-5
-    which: LM
+  degeneracy_relative_gap: 1.0e-2
+  degeneracy_tau: 1.0e-6
+  sparse_sigma: -1.0e-5
 
-degeneracy:
-  eps: 1.0e-2
-  tau: 1.0e-6
-
-kernel:
-  enabled: true
-  heads: 4
-  basis: bernstein
-  domain_max: 2.0  # L_sym spectrum; enlarge for a combinatorial-Laplacian ablation
-  order: 8
-  block_clamp: true
-  positive_response: false
-
-bias:
-  enabled: true
-  standardize: true
-  offdiag_only: true
-  alpha:
-    learnable: true
-    init: 0.1
-    per_head: true
-
-lite:
-  enabled: false
-
-adapter:
-  token_dim: 64
-  project_concat_back_to_token_dim: true
-  spectra_device: cuda
-  batch_bias_layout: padded
-  contiguous_batch: true
-  non_blocking: true
-
-sign:
-  psi: gin
-  psi_layers: 2
-  hidden_dim: 64
-  output_dim: 32
-  aggregation: sum
-  dropout: 0.1
-  first_order:
-    enabled: true
-    k: 8
-    include_eigenvalue_embedding: false  # not implemented in the current SignNet path
-  second_order:
-    enabled: false
+ast:
+  variant: kern
+  frequency_labels: eigenvalue
+  field_scaling: size
+  sign_hidden_dim: 32
+  sign_layers: 2
+  pe_dim: 16
+  second_order: false
+  kernel:
+    spectrum: retained_pe
+    basis: bernstein
+    order: 8
+    block_clamp: true
+    diagonal_node_channel: false
+    standardize_off_diagonal: true
+    epsilon: 1.0e-6
 
 gps:
+  implementation: graphgps_compatible_standalone
   hidden_dim: 64
-  layers: 5
-  transformer_heads: 4
-  local_model: gatedgcn
-  global_model: transformer
-  dropout: 0.1
-  attn_dropout: 0.1
+  layers: 10
+  heads: 4
+  local_model: GINE
+  global_model: Transformer
+  dropout: 0.0
+  attention_dropout: 0.5
+  batch_norm: true
+  graph_pooling: add
+  head: san_graph
 
 train:
-  device: cuda
-  precision: 16-mixed
-  batch_size: 32
-  max_epochs: 1000
+  loss: l1
   optimizer: adamw
-  lr: 5.0e-4
+  lr: 1.0e-3
   weight_decay: 1.0e-5
-  scheduler:
-    name: reduce_on_plateau
-    factor: 0.5
-    patience: 20
-    monitor: val_mae
-    mode: min
+  batch_size: 32
+  max_epochs: 2000
+  scheduler: cosine_with_warmup
+  warmup_epochs: 50
   gradient_clip_norm: 1.0
-  early_stopping_patience: 100
-
-evaluation:
-  metric: mae
-  report_best_validation_checkpoint: true

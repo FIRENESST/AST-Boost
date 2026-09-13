@@ -10,11 +10,27 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from ast_boost import ASTBoostPE
+from ast_boost import ASTBoostPE, SpectralKernelBias
 
 from .data import PackedGraphBatch
+from .graphgps import (
+    CategoricalFeatureEncoder,
+    GraphGPSGatedLayer,
+    GraphGPSLapPE,
+    GraphGPSLayer,
+    GraphGPSRWSE,
+    GraphGPSSignNet,
+)
 
 METHODS = ("none", "rwse", "lappe", "signnet_local", "lite", "kern", "full")
+REFERENCE_METHODS = (
+    "rwse_graphgps",
+    "lappe_graphgps",
+    "signnet_graphgps",
+)
+GRAPHGPS_ONLY_METHODS = (*REFERENCE_METHODS, "rwse_kernel_graphgps")
+ALL_METHODS = METHODS + GRAPHGPS_ONLY_METHODS
+BACKBONES = ("compact", "graphgps")
 
 
 class MaskedBatchNorm(nn.Module):
@@ -147,6 +163,7 @@ class GPSRegressor(nn.Module):
         heads=4,
         pe_dim=16,
         sign_hidden=32,
+        sign_layers=2,
         k=8,
         pairs=4,
         rw_steps=20,
@@ -156,45 +173,114 @@ class GPSRegressor(nn.Module):
         node_layout="compact",
         field_scaling="none",
         signal_backend="sparse",
+        frequency_labels="none",
+        kernel_spectrum="pe",
+        kernel_diagonal=False,
+        backbone="compact",
+        node_feature_dims: tuple[int, ...] | None = None,
+        edge_feature_dims: tuple[int, ...] | None = None,
+        output_dim: int = 1,
+        pooling: str = "sum",
+        head_type: str = "zinc",
+        local_gnn: str = "gine",
+        reference_pe_dim: int | None = None,
     ):
         super().__init__()
-        if method not in METHODS:
+        if method not in ALL_METHODS:
             raise ValueError(f"unknown method: {method}")
         if width < 4 or heads < 1 or width % heads or layers < 1:
             raise ValueError("positive layers and width divisible by heads are required")
         self.method = method
+        if backbone not in BACKBONES:
+            raise ValueError(f"unknown backbone: {backbone}")
+        if method in GRAPHGPS_ONLY_METHODS and backbone != "graphgps":
+            raise ValueError("GraphGPS reference encoders require backbone='graphgps'")
         if node_layout not in {"compact", "padded"}:
             raise ValueError("node_layout must be compact or padded")
+        if backbone == "graphgps" and node_layout != "compact":
+            raise ValueError("the GraphGPS backbone uses its native compact-node layout")
         self.node_layout = node_layout
+        self.backbone = backbone
         if signal_backend not in {"sparse", "dense"}:
             raise ValueError("signal_backend must be sparse or dense")
         self.signal_backend = signal_backend
-        # Build the common backbone FIRST: paired seeds give identical initial
-        # atom/bond embeddings, GPS layers, and prediction head for every method.
-        self.atom = nn.Embedding(28, width)
-        self.bond = nn.Embedding(4, width)
-        self.layers = nn.ModuleList(
-            GPSLayer(width, heads, dropout, attention_dropout) for _ in range(layers)
+        if output_dim < 1:
+            raise ValueError("output_dim must be positive")
+        if pooling not in {"sum", "mean"}:
+            raise ValueError("pooling must be sum or mean")
+        if head_type not in {"zinc", "linear"}:
+            raise ValueError("head_type must be zinc or linear")
+        if local_gnn not in {"gine", "gatedgcn"}:
+            raise ValueError("local_gnn must be gine or gatedgcn")
+        if local_gnn == "gatedgcn" and backbone != "graphgps":
+            raise ValueError("CustomGatedGCN requires backbone='graphgps'")
+        self.output_dim = output_dim
+        self.pooling = pooling
+        # Build the common backbone FIRST: paired seeds align shared weights
+        # for equal embedding widths, including local SignNet/Kern/Full.
+        # Public PE concatenation can change the atom embedding width.
+        default_reference_pe_dim = {
+            "rwse_graphgps": 28,
+            "rwse_kernel_graphgps": 28,
+            "lappe_graphgps": 8,
+            "signnet_graphgps": 8,
+        }.get(method, 0)
+        reference_pe_dim = (
+            default_reference_pe_dim if reference_pe_dim is None else reference_pe_dim
         )
-        self.head = nn.Sequential(
-            nn.Linear(width, width // 2),
-            nn.ReLU(),
-            nn.Linear(width // 2, width // 4),
-            nn.ReLU(),
-            nn.Linear(width // 4, 1),
+        if method not in GRAPHGPS_ONLY_METHODS and reference_pe_dim:
+            raise ValueError("reference_pe_dim only applies to GraphGPS reference encoders")
+        if reference_pe_dim >= width:
+            raise ValueError("GraphGPS PE dimension must be smaller than backbone width")
+        atom_width = width - reference_pe_dim
+        self.atom = (
+            CategoricalFeatureEncoder(node_feature_dims, atom_width)
+            if node_feature_dims is not None
+            else nn.Embedding(28, atom_width)
+        )
+        self.bond = (
+            CategoricalFeatureEncoder(edge_feature_dims, width)
+            if edge_feature_dims is not None
+            else nn.Embedding(4, width)
+        )
+        layer_type = (
+            GraphGPSGatedLayer
+            if backbone == "graphgps" and local_gnn == "gatedgcn"
+            else GraphGPSLayer
+            if backbone == "graphgps"
+            else GPSLayer
+        )
+        self.layers = nn.ModuleList(
+            layer_type(width, heads, dropout, attention_dropout) for _ in range(layers)
+        )
+        self.head = (
+            nn.Linear(width, output_dim)
+            if head_type == "linear"
+            else nn.Sequential(
+                nn.Linear(width, width // 2),
+                nn.ReLU(),
+                nn.Linear(width // 2, width // 4),
+                nn.ReLU(),
+                nn.Linear(width // 4, output_dim),
+            )
         )
         self.pe = None
+        self.reference_pe = None
+        self.kernel_only = None
         if method in {"lite", "kern", "full", "signnet_local"}:
             self.pe = ASTBoostPE(
                 variant="kern" if method == "signnet_local" else method,
                 heads=heads,
                 pe_dim=pe_dim,
                 sign_hidden=sign_hidden,
-                sign_layers=2,
+                sign_layers=sign_layers,
                 k0_pairs=pairs,
                 token_dim=width,
                 kernel_eps=kernel_eps,
                 field_scaling=field_scaling,
+                frequency_labels=frequency_labels,
+                kernel_spectrum=kernel_spectrum,
+                kernel_diagonal=kernel_diagonal,
             )
             if method == "signnet_local":
                 self.pe.kernel.requires_grad_(False)
@@ -203,6 +289,18 @@ class GPSRegressor(nn.Module):
             self.feature_norm = MaskedBatchNorm(feature_width)
             self.feature_projection = nn.Linear(feature_width, pe_dim)
             self.fusion = nn.Linear(width + pe_dim, width)
+        elif method in {"rwse_graphgps", "rwse_kernel_graphgps"}:
+            self.reference_pe = GraphGPSRWSE(rw_steps, output_dim=reference_pe_dim)
+            if method == "rwse_kernel_graphgps":
+                self.kernel_only = SpectralKernelBias(
+                    heads=heads, degree=8, eps=kernel_eps
+                )
+        elif method == "lappe_graphgps":
+            self.reference_pe = GraphGPSLapPE(output_dim=reference_pe_dim)
+        elif method == "signnet_graphgps":
+            self.reference_pe = GraphGPSSignNet(
+                frequencies=k, output_dim=reference_pe_dim
+            )
 
     def forward(self, batch: PackedGraphBatch) -> Tensor:
         valid = batch.spectra.valid_nodes
@@ -210,6 +308,9 @@ class GPSRegressor(nn.Module):
         node_index = batch.node_index
         if node_index is None:
             node_index = valid.reshape(-1).nonzero().reshape(-1)
+        mapping = node_index.new_full((valid.numel(),), -1)
+        mapping.index_copy_(0, node_index, torch.arange(len(node_index), device=node_index.device))
+        compact_edges = mapping[batch.edge_index]
         x = self.atom(batch.node_types)
         bias = None
         if self.pe is not None:
@@ -232,6 +333,33 @@ class GPSRegressor(nn.Module):
                 features = features * (2 * signs - 1)
             encoded = self.feature_projection(self.feature_norm(features, valid, node_index))
             x = self.fusion(torch.cat((x, encoded), dim=-1))
+        elif self.reference_pe is not None:
+            if self.method in {"rwse_graphgps", "rwse_kernel_graphgps"}:
+                features = batch.rwse.reshape(-1, batch.rwse.shape[-1]).index_select(
+                    0, node_index
+                )
+                encoded = self.reference_pe(features)
+            elif self.method == "lappe_graphgps":
+                encoded = self.reference_pe(
+                    batch.graphgps_eigenvalues,
+                    batch.graphgps_eigenvectors,
+                    batch.graphgps_frequency_mask,
+                    node_index,
+                )
+            else:
+                encoded = self.reference_pe(
+                    batch.graphgps_eigenvectors, compact_edges, node_index
+                )
+            padded_encoded = encoded.new_zeros(valid.numel(), encoded.shape[-1])
+            padded_encoded.index_copy_(0, node_index, encoded)
+            x = torch.cat((x, padded_encoded.reshape(*valid.shape, -1)), dim=-1)
+            if self.kernel_only is not None:
+                bias = self.kernel_only.forward_padded(
+                    batch.spectra.eigenvalues,
+                    batch.spectra.eigenvectors,
+                    batch.spectra.frequency_mask,
+                    valid,
+                )
         x = x.masked_fill(~valid[..., None], 0)
         edge_embedding = self.bond(batch.edge_types)
         if self.node_layout == "padded":
@@ -241,9 +369,6 @@ class GPSRegressor(nn.Module):
             pooled = x.to(pool_dtype).masked_fill(~valid[..., None], 0).sum(1)
         else:
             x = x.reshape(-1, x.shape[-1]).index_select(0, node_index)
-            mapping = node_index.new_full((valid.numel(),), -1)
-            mapping.index_copy_(0, node_index, torch.arange(len(node_index), device=x.device))
-            compact_edges = mapping[batch.edge_index]
             # The kernel is shared across layers: its padding mask and gradient
             # accumulation can also be shared instead of rebuilt ten times.
             attention_mask = torch.zeros(
@@ -252,16 +377,24 @@ class GPSRegressor(nn.Module):
             if bias is not None:
                 attention_mask = attention_mask + bias
             for layer in self.layers:
-                x = layer.forward_compact(
+                layer_output = layer.forward_compact(
                     x, compact_edges, edge_embedding, node_index, valid.shape, attention_mask
                 )
+                if isinstance(layer_output, tuple):
+                    x, edge_embedding = layer_output
+                else:
+                    x = layer_output
             # Keep the original padded sum reduction order, not a CUDA atomic
             # scatter sum, to avoid introducing another nondeterministic op.
             pool_dtype = torch.float64 if x.dtype == torch.float64 else torch.float32
             pooled = x.new_zeros(valid.numel(), x.shape[-1], dtype=pool_dtype)
             pooled = pooled.index_copy(0, node_index, x.to(pool_dtype))
             pooled = pooled.reshape(*valid.shape, -1).sum(1)
-        return self.head(pooled).reshape(-1)
+        if self.pooling == "mean":
+            counts = valid.sum(1, keepdim=True).clamp_min(1).to(pooled.dtype)
+            pooled = pooled / counts
+        prediction = self.head(pooled)
+        return prediction.reshape(-1) if self.output_dim == 1 else prediction
 
     @property
     def trainable_parameters(self):

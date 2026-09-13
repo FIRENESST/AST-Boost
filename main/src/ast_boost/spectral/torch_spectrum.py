@@ -19,6 +19,19 @@ except ImportError:  # pragma: no cover - preprocessing-only environment
 
 
 if torch is not None:
+    _EXTRA_TENSORS = (
+        "first_order_labels",
+        "second_order_labels",
+        "kernel_eigenvalues",
+        "kernel_eigenvectors",
+        "kernel_frequency_mask",
+    )
+
+    def _map_extras(spectrum, transform):
+        return {
+            name: transform(value) if (value := getattr(spectrum, name)) is not None else None
+            for name in _EXTRA_TENSORS
+        }
 
     def _canonical_device(device: torch.device | str) -> torch.device:
         target = torch.device(device)
@@ -47,6 +60,11 @@ if torch is not None:
         num_blocks: int
         laplacian: str
         zero_tolerance: float
+        first_order_labels: Tensor | None = None
+        second_order_labels: Tensor | None = None
+        kernel_eigenvalues: Tensor | None = None
+        kernel_eigenvectors: Tensor | None = None
+        kernel_frequency_mask: Tensor | None = None
 
         @property
         def num_nodes(self) -> int:
@@ -87,6 +105,7 @@ if torch is not None:
             if not torch.cuda.is_available():
                 return self
             return TorchSpectrum(
+                **_map_extras(self, lambda value: value.pin_memory()),
                 eigenvalues=self.eigenvalues.pin_memory(),
                 clamped_eigenvalues=self.clamped_eigenvalues.pin_memory(),
                 eigenvectors=self.eigenvectors.pin_memory(),
@@ -112,6 +131,14 @@ if torch is not None:
             if self.device == target and self.dtype == target_dtype:
                 return self
             return TorchSpectrum(
+                **_map_extras(
+                    self,
+                    lambda value: value.to(
+                        device=target,
+                        dtype=target_dtype if value.is_floating_point() else value.dtype,
+                        non_blocking=non_blocking,
+                    ),
+                ),
                 eigenvalues=self.eigenvalues.to(
                     device=target, dtype=target_dtype, non_blocking=non_blocking
                 ),
@@ -147,6 +174,11 @@ if torch is not None:
         valid_nodes: Tensor
         node_counts: tuple[int, ...]
         pair_limit: int
+        first_order_labels: Tensor | None = None
+        second_order_labels: Tensor | None = None
+        kernel_eigenvalues: Tensor | None = None
+        kernel_eigenvectors: Tensor | None = None
+        kernel_frequency_mask: Tensor | None = None
 
         @property
         def batch_size(self) -> int:
@@ -172,6 +204,7 @@ if torch is not None:
             if self.device.type != "cpu" or self.is_pinned or not torch.cuda.is_available():
                 return self
             return TorchSpectrumBatch(
+                **_map_extras(self, lambda value: value.pin_memory()),
                 eigenvalues=self.eigenvalues.pin_memory(),
                 clamped_eigenvalues=self.clamped_eigenvalues.pin_memory(),
                 eigenvectors=self.eigenvectors.pin_memory(),
@@ -204,6 +237,14 @@ if torch is not None:
                 return value.to(device=target, non_blocking=non_blocking)
 
             return TorchSpectrumBatch(
+                **_map_extras(
+                    self,
+                    lambda value: value.to(
+                        device=target,
+                        dtype=target_dtype if value.is_floating_point() else value.dtype,
+                        non_blocking=non_blocking,
+                    ),
+                ),
                 eigenvalues=move_float(self.eigenvalues),
                 clamped_eigenvalues=move_float(self.clamped_eigenvalues),
                 eigenvectors=move_float(self.eigenvectors),
@@ -227,6 +268,7 @@ if torch is not None:
     def prepare_spectrum(
         spectrum: Spectrum,
         *,
+        kernel_spectrum: Spectrum | None = None,
         k0_pairs: int = 4,
         device: torch.device | str = "cpu",
         dtype: torch.dtype = torch.float32,
@@ -234,7 +276,27 @@ if torch is not None:
         non_blocking: bool = True,
     ) -> TorchSpectrum:
         """Convert and precompute all train-time spectral tensors exactly once."""
+        pairs = second_order_pairs(spectrum, k0_pairs=k0_pairs)
+        if kernel_spectrum is not None and (
+            kernel_spectrum.num_nodes != spectrum.num_nodes
+            or kernel_spectrum.k != spectrum.num_nodes
+            or kernel_spectrum.laplacian != spectrum.laplacian
+        ):
+            raise ValueError("kernel_spectrum must be a complete spectrum of the same graph")
         prepared = TorchSpectrum(
+            first_order_labels=_float_tensor(
+                np.repeat(spectrum.block_means[:, None], 2, axis=1), dtype
+            ),
+            second_order_labels=_float_tensor(spectrum.clamped_eigenvalues[pairs], dtype),
+            kernel_eigenvalues=_float_tensor(kernel_spectrum.eigenvalues, dtype)
+            if kernel_spectrum is not None
+            else None,
+            kernel_eigenvectors=_float_tensor(kernel_spectrum.eigenvectors, dtype)
+            if kernel_spectrum is not None
+            else None,
+            kernel_frequency_mask=torch.ones(kernel_spectrum.k, dtype=torch.bool)
+            if kernel_spectrum is not None
+            else None,
             eigenvalues=_float_tensor(spectrum.eigenvalues, dtype),
             clamped_eigenvalues=_float_tensor(spectrum.clamped_eigenvalues, dtype),
             eigenvectors=_float_tensor(spectrum.eigenvectors, dtype),
@@ -313,6 +375,31 @@ if torch is not None:
         max_second_order = max((pairs.shape[0] for pairs in pair_lists), default=0)
         batch_size = len(prepared)
 
+        first_labels = torch.zeros(
+            (batch_size, max_first_order, 2), device=build_device, dtype=dtype
+        )
+        second_labels = torch.zeros(
+            (batch_size, max_second_order, 2), device=build_device, dtype=dtype
+        )
+        has_kernel = any(item.kernel_eigenvalues is not None for item in prepared)
+        if has_kernel and not all(item.kernel_eigenvalues is not None for item in prepared):
+            raise ValueError("all graphs in a batch must provide the independent kernel spectrum")
+        kernel_values = (
+            torch.zeros((batch_size, max_nodes), device=build_device, dtype=dtype)
+            if has_kernel
+            else None
+        )
+        kernel_vectors = (
+            torch.zeros((batch_size, max_nodes, max_nodes), device=build_device, dtype=dtype)
+            if has_kernel
+            else None
+        )
+        kernel_mask = (
+            torch.zeros((batch_size, max_nodes), device=build_device, dtype=torch.bool)
+            if has_kernel
+            else None
+        )
+
         eigenvalues = torch.zeros((batch_size, max_frequencies), device=build_device, dtype=dtype)
         clamped_eigenvalues = torch.zeros_like(eigenvalues)
         eigenvectors = torch.zeros(
@@ -338,6 +425,16 @@ if torch is not None:
             n, k = spectrum.num_nodes, spectrum.k
             first_count = spectrum.first_order.shape[0]
             second_count = pairs.shape[0]
+            if spectrum.first_order_labels is None:
+                if first_count:
+                    raise ValueError("rebuild the spectrum cache to include frequency labels")
+            else:
+                first_labels[index, :first_count] = spectrum.first_order_labels
+            second_labels[index, :second_count] = spectrum.clamped_eigenvalues[pairs]
+            if has_kernel:
+                kernel_values[index, :n] = spectrum.kernel_eigenvalues
+                kernel_vectors[index, :n, :n] = spectrum.kernel_eigenvectors
+                kernel_mask[index, :n] = True
             eigenvalues[index, :k] = spectrum.eigenvalues
             clamped_eigenvalues[index, :k] = spectrum.clamped_eigenvalues
             eigenvectors[index, :n, :k] = spectrum.eigenvectors
@@ -353,6 +450,11 @@ if torch is not None:
             valid_nodes[index, :n] = True
 
         batch = TorchSpectrumBatch(
+            first_order_labels=first_labels,
+            second_order_labels=second_labels,
+            kernel_eigenvalues=kernel_values,
+            kernel_eigenvectors=kernel_vectors,
+            kernel_frequency_mask=kernel_mask,
             eigenvalues=eigenvalues,
             clamped_eigenvalues=clamped_eigenvalues,
             eigenvectors=eigenvectors,

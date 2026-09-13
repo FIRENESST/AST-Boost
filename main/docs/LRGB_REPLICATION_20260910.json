@@ -1,0 +1,714 @@
+{
+  "plan": {
+    "purpose": "Three-seed replication of the corrected Peptides-struct training pipeline",
+    "dataset": "Peptides-struct",
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "methods": [
+      "signnet_graphgps",
+      "signnet_local",
+      "kern",
+      "full"
+    ],
+    "epochs": 35,
+    "warmup_epochs": 10,
+    "batch_size": 128,
+    "sampler": "random",
+    "precision": "bf16",
+    "selection": "best validation MAE for each completed run",
+    "reference_study": "runs/lrgb_struct_random35_seed42_20260910",
+    "reuse": {
+      "seed": 42,
+      "methods": [
+        "signnet_local",
+        "kern",
+        "full"
+      ]
+    },
+    "new_studies": [
+      {
+        "directory": "runs/lrgb_struct_signnet35_seed42_20260910",
+        "methods": [
+          "signnet_graphgps"
+        ],
+        "seeds": [
+          42
+        ]
+      },
+      {
+        "directory": "runs/lrgb_struct_replication35_seeds43_44_20260910",
+        "methods": [
+          "signnet_graphgps",
+          "signnet_local",
+          "kern",
+          "full"
+        ],
+        "seeds": [
+          43,
+          44
+        ]
+      }
+    ],
+    "invariants": [
+      "Reuse the exact source and runner hashes from the reference study",
+      "Verify identical topology, targets and cached spectra across studies",
+      "Keep architecture, optimizer, frequency labels and spectral settings fixed",
+      "Report all planned results, including negative outcomes; no early stopping by score"
+    ],
+    "comparisons": [
+      {
+        "target": "kern",
+        "reference": "signnet_local",
+        "hypothesis": "H2 within matched first-order control"
+      },
+      {
+        "target": "kern",
+        "reference": "signnet_graphgps",
+        "hypothesis": "performance against public SignNet source port"
+      },
+      {
+        "target": "full",
+        "reference": "kern",
+        "hypothesis": "H1 second-order field"
+      }
+    ],
+    "reporting": "Mean and sample standard deviation, all paired differences, direction counts; three seeds are screening evidence, not a converged benchmark",
+    "decision": "Consistent benefits justify longer training; inconsistent or negative differences do not justify new spectral modules. Do not declare H1 or H2 established from this short screen.",
+    "test_evaluations": 0,
+    "git_commits": 0
+  },
+  "methods": {
+    "signnet_graphgps": {
+      "mean": 0.2547319332758586,
+      "sample_std": 0.0037491500587281067,
+      "parameters": 568175,
+      "rows": [
+        {
+          "dataset": "Peptides-struct",
+          "method": "signnet_graphgps",
+          "seed": 42,
+          "metric": "mae",
+          "best_val_metric": 0.2575175166130066,
+          "best_epoch": 33,
+          "parameters": 568175,
+          "train_epoch_seconds_median": 11.654604000003019,
+          "peak_allocated_mib": 3811.84521484375,
+          "protocol_sha256": "9219064fe3f9323b6711f51d0618897fe976b019aad1c3712a1a4b7636151163",
+          "test_evaluations": 0,
+          "last_val_metric": 0.25776100158691406,
+          "train_epoch_seconds_range": [
+            10.686808899998141,
+            16.661137899995083
+          ]
+        },
+        {
+          "dataset": "Peptides-struct",
+          "method": "signnet_graphgps",
+          "seed": 43,
+          "metric": "mae",
+          "best_val_metric": 0.2504692077636719,
+          "best_epoch": 35,
+          "parameters": 568175,
+          "train_epoch_seconds_median": 23.604135100002168,
+          "peak_allocated_mib": 3871.28857421875,
+          "protocol_sha256": "5519d0e4f92c56f8a2832ddc1f85d6599ad94af5fd380ea7fd92de1799d7e2e6",
+          "test_evaluations": 0,
+          "last_val_metric": 0.2504692077636719,
+          "train_epoch_seconds_range": [
+            10.854874900003779,
+            41.032571999996435
+          ]
+        },
+        {
+          "dataset": "Peptides-struct",
+          "method": "signnet_graphgps",
+          "seed": 44,
+          "metric": "mae",
+          "best_val_metric": 0.2562090754508972,
+          "best_epoch": 35,
+          "parameters": 568175,
+          "train_epoch_seconds_median": 9.876770900002157,
+          "peak_allocated_mib": 3794.712890625,
+          "protocol_sha256": "5519d0e4f92c56f8a2832ddc1f85d6599ad94af5fd380ea7fd92de1799d7e2e6",
+          "test_evaluations": 0,
+          "last_val_metric": 0.2562090754508972,
+          "train_epoch_seconds_range": [
+            9.795866699998442,
+            10.623520799999824
+          ]
+        }
+      ]
+    },
+    "signnet_local": {
+      "mean": 0.2507387499014537,
+      "sample_std": 0.0012799442791091348,
+      "parameters": 525501,
+      "rows": [
+        {
+          "dataset": "Peptides-struct",
+          "method": "signnet_local",
+          "seed": 42,
+          "metric": "mae",
+          "best_val_metric": 0.2494458556175232,
+          "best_epoch": 35,
+          "parameters": 525501,
+          "train_epoch_seconds_median": 6.370451700000558,
+          "peak_allocated_mib": 3018.86279296875,
+          "protocol_sha256": "7073911613e4df3659f7258bc63bb2629976de78707fb3902a2f2feaa3a61f14",
+          "test_evaluations": 0,
+          "last_val_metric": 0.2494458556175232,
+          "train_epoch_seconds_range": [
+            5.878644399999757,
+            20.950814799998625
+          ]
+        },
+        {
+          "dataset": "Peptides-struct",
+          "method": "signnet_local",
+          "seed": 43,
+          "metric": "mae",
+          "best_val_metric": 0.2507650554180145,
+          "best_epoch": 33,
+          "parameters": 525501,
+          "train_epoch_seconds_median": 5.292482699995162,
+          "peak_allocated_mib": 3036.5380859375,
+          "protocol_sha256": "5519d0e4f92c56f8a2832ddc1f85d6599ad94af5fd380ea7fd92de1799d7e2e6",
+          "test_evaluations": 0,
+          "last_val_metric": 0.25128820538520813,
+          "train_epoch_seconds_range": [
+            5.166672200000903,
+            5.999343499999668
+          ]
+        },
+        {
+          "dataset": "Peptides-struct",
+          "method": "signnet_local",
+          "seed": 44,
+          "metric": "mae",
+          "best_val_metric": 0.25200533866882324,
+          "best_epoch": 35,
+          "parameters": 525501,
+          "train_epoch_seconds_median": 5.25161250000383,
+          "peak_allocated_mib": 3009.4560546875,
+          "protocol_sha256": "5519d0e4f92c56f8a2832ddc1f85d6599ad94af5fd380ea7fd92de1799d7e2e6",
+          "test_evaluations": 0,
+          "last_val_metric": 0.25200533866882324,
+          "train_epoch_seconds_range": [
+            4.992626699997345,
+            5.425553700006276
+          ]
+        }
+      ]
+    },
+    "kern": {
+      "mean": 0.2507738967736562,
+      "sample_std": 0.0011526381515124826,
+      "parameters": 525541,
+      "rows": [
+        {
+          "dataset": "Peptides-struct",
+          "method": "kern",
+          "seed": 42,
+          "metric": "mae",
+          "best_val_metric": 0.25010812282562256,
+          "best_epoch": 35,
+          "parameters": 525541,
+          "train_epoch_seconds_median": 9.543872599999304,
+          "peak_allocated_mib": 4233.13427734375,
+          "protocol_sha256": "7073911613e4df3659f7258bc63bb2629976de78707fb3902a2f2feaa3a61f14",
+          "test_evaluations": 0,
+          "last_val_metric": 0.25010812282562256,
+          "train_epoch_seconds_range": [
+            9.250314999999318,
+            10.208245200001329
+          ]
+        },
+        {
+          "dataset": "Peptides-struct",
+          "method": "kern",
+          "seed": 43,
+          "metric": "mae",
+          "best_val_metric": 0.25210484862327576,
+          "best_epoch": 35,
+          "parameters": 525541,
+          "train_epoch_seconds_median": 8.448264200000267,
+          "peak_allocated_mib": 4252.8759765625,
+          "protocol_sha256": "5519d0e4f92c56f8a2832ddc1f85d6599ad94af5fd380ea7fd92de1799d7e2e6",
+          "test_evaluations": 0,
+          "last_val_metric": 0.25210484862327576,
+          "train_epoch_seconds_range": [
+            8.329059900002903,
+            8.705288299999665
+          ]
+        },
+        {
+          "dataset": "Peptides-struct",
+          "method": "kern",
+          "seed": 44,
+          "metric": "mae",
+          "best_val_metric": 0.2501087188720703,
+          "best_epoch": 35,
+          "parameters": 525541,
+          "train_epoch_seconds_median": 8.210232099998393,
+          "peak_allocated_mib": 4225.556640625,
+          "protocol_sha256": "5519d0e4f92c56f8a2832ddc1f85d6599ad94af5fd380ea7fd92de1799d7e2e6",
+          "test_evaluations": 0,
+          "last_val_metric": 0.2501087188720703,
+          "train_epoch_seconds_range": [
+            8.03728289999708,
+            8.496808700001566
+          ]
+        }
+      ]
+    },
+    "full": {
+      "mean": 0.2501795291900635,
+      "sample_std": 0.0004585702811103335,
+      "parameters": 530837,
+      "rows": [
+        {
+          "dataset": "Peptides-struct",
+          "method": "full",
+          "seed": 42,
+          "metric": "mae",
+          "best_val_metric": 0.2496616244316101,
+          "best_epoch": 35,
+          "parameters": 530837,
+          "train_epoch_seconds_median": 10.7264299999988,
+          "peak_allocated_mib": 5154.94970703125,
+          "protocol_sha256": "7073911613e4df3659f7258bc63bb2629976de78707fb3902a2f2feaa3a61f14",
+          "test_evaluations": 0,
+          "last_val_metric": 0.2496616244316101,
+          "train_epoch_seconds_range": [
+            10.525599599999623,
+            11.048063099999126
+          ]
+        },
+        {
+          "dataset": "Peptides-struct",
+          "method": "full",
+          "seed": 43,
+          "metric": "mae",
+          "best_val_metric": 0.25053396821022034,
+          "best_epoch": 35,
+          "parameters": 530837,
+          "train_epoch_seconds_median": 9.505874200003745,
+          "peak_allocated_mib": 5178.095703125,
+          "protocol_sha256": "5519d0e4f92c56f8a2832ddc1f85d6599ad94af5fd380ea7fd92de1799d7e2e6",
+          "test_evaluations": 0,
+          "last_val_metric": 0.25053396821022034,
+          "train_epoch_seconds_range": [
+            9.339925799999037,
+            9.845687000000908
+          ]
+        },
+        {
+          "dataset": "Peptides-struct",
+          "method": "full",
+          "seed": 44,
+          "metric": "mae",
+          "best_val_metric": 0.25034299492836,
+          "best_epoch": 33,
+          "parameters": 530837,
+          "train_epoch_seconds_median": 9.159245500006364,
+          "peak_allocated_mib": 5147.70751953125,
+          "protocol_sha256": "5519d0e4f92c56f8a2832ddc1f85d6599ad94af5fd380ea7fd92de1799d7e2e6",
+          "test_evaluations": 0,
+          "last_val_metric": 0.25052034854888916,
+          "train_epoch_seconds_range": [
+            8.981482600000163,
+            9.668167900003027
+          ]
+        }
+      ]
+    }
+  },
+  "contrasts": [
+    {
+      "target": "kern",
+      "reference": "signnet_local",
+      "hypothesis": "H2 within matched first-order control",
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "differences": [
+        0.0006622672080993652,
+        0.0013397932052612305,
+        -0.0018966197967529297
+      ],
+      "mean": 3.5146872202555336e-05,
+      "sample_std": 0.001706913066524793,
+      "target_wins": 1,
+      "reference_wins": 2,
+      "ties": 0,
+      "interpretation": "negative favors target; descriptive screening, not significance"
+    },
+    {
+      "target": "kern",
+      "reference": "signnet_graphgps",
+      "hypothesis": "performance against public SignNet source port",
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "differences": [
+        -0.007409393787384033,
+        0.0016356408596038818,
+        -0.006100356578826904
+      ],
+      "mean": -0.003958036502202352,
+      "sample_std": 0.004888283382163356,
+      "target_wins": 2,
+      "reference_wins": 1,
+      "ties": 0,
+      "interpretation": "negative favors target; descriptive screening, not significance"
+    },
+    {
+      "target": "full",
+      "reference": "kern",
+      "hypothesis": "H1 second-order field",
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "differences": [
+        -0.00044649839401245117,
+        -0.00157088041305542,
+        0.00023427605628967285
+      ],
+      "mean": -0.0005943675835927328,
+      "sample_std": 0.0009116174870113875,
+      "target_wins": 2,
+      "reference_wins": 1,
+      "ties": 0,
+      "interpretation": "negative favors target; descriptive screening, not significance"
+    }
+  ],
+  "test_evaluations": 0,
+  "evidence": {
+    "runs/lrgb_struct_random35_seed42_20260910": {
+      "manifest": {
+        "dataset": "Peptides-struct",
+        "methods": [
+          "signnet_local",
+          "kern",
+          "full",
+          "lappe_graphgps"
+        ],
+        "seeds": [
+          42
+        ],
+        "epochs": 35,
+        "batch_size": 128,
+        "warmup_epochs": 10,
+        "sign_hidden": 32,
+        "sign_layers": 2,
+        "rw_steps": 0,
+        "train_limit": 0,
+        "val_limit": 0,
+        "device": "cuda",
+        "precision": "bf16",
+        "batch_sampler": "random",
+        "sortish_window_batches": null,
+        "model": {
+          "layer": "CustomGatedGCN+Transformer",
+          "layers": 4,
+          "width": 96,
+          "heads": 4,
+          "attention_dropout": 0.5,
+          "pooling": "mean",
+          "lap_pe_dim": 16,
+          "lap_pe_frequencies": 10
+        },
+        "optimizer": {
+          "name": "AdamW",
+          "lr": 0.0003,
+          "weight_decay": 0.0,
+          "warmup_epochs": 10,
+          "schedule": "cosine_with_warmup",
+          "clip_grad_norm": 1.0
+        },
+        "ast_controls": {
+          "frequency_labels": "eigenvalue",
+          "kernel_spectrum": "pe",
+          "kernel_diagonal": false,
+          "field_scaling": "size",
+          "pairs": 4
+        },
+        "selection": "best validation mae; test split is never instantiated",
+        "graphgps_reference": {
+          "repository": "https://github.com/rampasek/GraphGPS",
+          "commit": "28015707cbab7f8ad72bed0ee872d068ea59c94b",
+          "scope": "standalone source port; not the GraphGym training runtime"
+        },
+        "source_sha256": {
+          "src\\ast_boost\\__init__.py": "8de73348b349e5738b0dd0b746adb1b3e4349a84f40096acd8a1d7aab4b3924a",
+          "src\\ast_boost\\cli.py": "8cf60813d0b8c8d459d78689b79e9abe3ed13af2112905c89d49debb2680c4d0",
+          "src\\ast_boost\\experiments\\__init__.py": "b2a46bf28b92ac43f090b430623e75b235f28a9b213af2461edeb1ac18859804",
+          "src\\ast_boost\\experiments\\compare.py": "f2fa70b9e26c1144b297270ef4470c7fb02c55a8736ba0ee2f52f159acfc77a4",
+          "src\\ast_boost\\experiments\\data.py": "1cc39113c5214a4319f348047c6c6d05aaa562b99d1e7848305465c8b07957ba",
+          "src\\ast_boost\\experiments\\graphgps.py": "ac63962a4d4f85ecda0f264daee7d722736d03160762d4d5ee5502061f7c4616",
+          "src\\ast_boost\\experiments\\lrgb.py": "324152ca1e60986577ebc9f14d86070e7de57b59d141bf81d680dc526d6c4240",
+          "src\\ast_boost\\experiments\\model.py": "f9c2e453eda9f782d80b32fd11dd1df84cab838cdee32ed7e28ffd562271c065",
+          "src\\ast_boost\\experiments\\sampling.py": "2dd60b6258dc23502aa9cddf8341b5f11753f6d4624c66ef7ad3cba94a40175c",
+          "src\\ast_boost\\experiments\\schedule_compare.py": "a61ac4713566f6baf66a476d416b6d52f4649dedf69303e53184642d19c3ee12",
+          "src\\ast_boost\\experiments\\train.py": "75f3035321bc06f7b048ba591ecdda142660c064c0e5a47676b91e73a91201eb",
+          "src\\ast_boost\\spectral\\__init__.py": "fabdc997e0d20638cf0d0073a83770e4ede0738d3aa78a58dd768385f27ef717",
+          "src\\ast_boost\\spectral\\fields.py": "cc4aa74bc95a83d42902d45c78aa3acd7a5c67a37ce04e8230eb853603543e52",
+          "src\\ast_boost\\spectral\\gps_adapter.py": "870a906c4323ed873ad0db551769abcedb0d18e59af7533b766e14cbeb0a6a89",
+          "src\\ast_boost\\spectral\\kernel.py": "aeb232df2ce977ea9c4e566c1f1339af6ea24f879485523c5403e56a31a2c24b",
+          "src\\ast_boost\\spectral\\precompute.py": "3e6559e0213a9aadb784c6d5bbe8726fa420ca6e5e05ddd57da86aa6ebef60fc",
+          "src\\ast_boost\\spectral\\signnet.py": "75ff0d873b6da32728832ad12b32c513fb8fb2a8b51f25556697343aa1926533",
+          "src\\ast_boost\\spectral\\torch_spectrum.py": "3d8c74bd99f15da50106cdc9d70eb302d303a02cfce13a18503c4c55f6b35e2d",
+          "src\\ast_boost\\spectral\\types.py": "dab96fe41324211f5c0cffe02c90820d1c0ea6810ff1efc135b9d876eb9c5109"
+        },
+        "runner_sha256": "58bb4fc0a4d852d443637765af5452b9f6cf885b7e8e4212c13374fc66e1b9ae",
+        "environment": {
+          "python": "3.12.14",
+          "torch": "2.13.0+cu130",
+          "gpu": "NVIDIA GeForce RTX 5070 Ti"
+        },
+        "test_evaluations": 0,
+        "source_snapshot_sha256": "953768b4477f799de9474b6d328694a227de7d2b9d1279a83b83886971c6f73e",
+        "protocol_sha256": "7073911613e4df3659f7258bc63bb2629976de78707fb3902a2f2feaa3a61f14"
+      },
+      "dataset_identity": {
+        "train": {
+          "dataset_sha256": "a50e27e3f9daeaaa55dfd6d6049659f688714bb6c8dfebcc02d2655f7cd48243",
+          "target_sha256": "bdf090a79865fc31a716b7685e562ea6288f4e560cbf98a3db9a68769b4ff951",
+          "spectral_cache_sha256": "c0ad0ef2f39ef1ba8da8ddfc75724e9bd84c89ca5e3bf9c94f7476d67a590fc4"
+        },
+        "val": {
+          "dataset_sha256": "6039174223ff3d6a5187202ebc3fb8f6ad19e0cdfc0503a373dc2796da6ba8df",
+          "target_sha256": "25d17bd8eb68a2ee0ac6f4e13920604f6f28758dad1a7778dd7a1cc81f86bb85",
+          "spectral_cache_sha256": "446f0ba26169236a46126ebc1415b0f747bd34a9d56a8d0c67e4cd2cddc3863a"
+        }
+      }
+    },
+    "runs/lrgb_struct_signnet35_seed42_20260910": {
+      "manifest": {
+        "dataset": "Peptides-struct",
+        "methods": [
+          "signnet_graphgps"
+        ],
+        "seeds": [
+          42
+        ],
+        "epochs": 35,
+        "batch_size": 128,
+        "warmup_epochs": 10,
+        "sign_hidden": 32,
+        "sign_layers": 2,
+        "rw_steps": 0,
+        "train_limit": 0,
+        "val_limit": 0,
+        "device": "cuda",
+        "precision": "bf16",
+        "batch_sampler": "random",
+        "sortish_window_batches": null,
+        "model": {
+          "layer": "CustomGatedGCN+Transformer",
+          "layers": 4,
+          "width": 96,
+          "heads": 4,
+          "attention_dropout": 0.5,
+          "pooling": "mean",
+          "lap_pe_dim": 16,
+          "lap_pe_frequencies": 10
+        },
+        "optimizer": {
+          "name": "AdamW",
+          "lr": 0.0003,
+          "weight_decay": 0.0,
+          "warmup_epochs": 10,
+          "schedule": "cosine_with_warmup",
+          "clip_grad_norm": 1.0
+        },
+        "ast_controls": {
+          "frequency_labels": "eigenvalue",
+          "kernel_spectrum": "pe",
+          "kernel_diagonal": false,
+          "field_scaling": "size",
+          "pairs": 4
+        },
+        "selection": "best validation mae; test split is never instantiated",
+        "graphgps_reference": {
+          "repository": "https://github.com/rampasek/GraphGPS",
+          "commit": "28015707cbab7f8ad72bed0ee872d068ea59c94b",
+          "scope": "standalone source port; not the GraphGym training runtime"
+        },
+        "source_sha256": {
+          "src\\ast_boost\\__init__.py": "8de73348b349e5738b0dd0b746adb1b3e4349a84f40096acd8a1d7aab4b3924a",
+          "src\\ast_boost\\cli.py": "8cf60813d0b8c8d459d78689b79e9abe3ed13af2112905c89d49debb2680c4d0",
+          "src\\ast_boost\\experiments\\__init__.py": "b2a46bf28b92ac43f090b430623e75b235f28a9b213af2461edeb1ac18859804",
+          "src\\ast_boost\\experiments\\compare.py": "f2fa70b9e26c1144b297270ef4470c7fb02c55a8736ba0ee2f52f159acfc77a4",
+          "src\\ast_boost\\experiments\\data.py": "1cc39113c5214a4319f348047c6c6d05aaa562b99d1e7848305465c8b07957ba",
+          "src\\ast_boost\\experiments\\graphgps.py": "ac63962a4d4f85ecda0f264daee7d722736d03160762d4d5ee5502061f7c4616",
+          "src\\ast_boost\\experiments\\lrgb.py": "324152ca1e60986577ebc9f14d86070e7de57b59d141bf81d680dc526d6c4240",
+          "src\\ast_boost\\experiments\\model.py": "f9c2e453eda9f782d80b32fd11dd1df84cab838cdee32ed7e28ffd562271c065",
+          "src\\ast_boost\\experiments\\sampling.py": "2dd60b6258dc23502aa9cddf8341b5f11753f6d4624c66ef7ad3cba94a40175c",
+          "src\\ast_boost\\experiments\\schedule_compare.py": "a61ac4713566f6baf66a476d416b6d52f4649dedf69303e53184642d19c3ee12",
+          "src\\ast_boost\\experiments\\train.py": "75f3035321bc06f7b048ba591ecdda142660c064c0e5a47676b91e73a91201eb",
+          "src\\ast_boost\\spectral\\__init__.py": "fabdc997e0d20638cf0d0073a83770e4ede0738d3aa78a58dd768385f27ef717",
+          "src\\ast_boost\\spectral\\fields.py": "cc4aa74bc95a83d42902d45c78aa3acd7a5c67a37ce04e8230eb853603543e52",
+          "src\\ast_boost\\spectral\\gps_adapter.py": "870a906c4323ed873ad0db551769abcedb0d18e59af7533b766e14cbeb0a6a89",
+          "src\\ast_boost\\spectral\\kernel.py": "aeb232df2ce977ea9c4e566c1f1339af6ea24f879485523c5403e56a31a2c24b",
+          "src\\ast_boost\\spectral\\precompute.py": "3e6559e0213a9aadb784c6d5bbe8726fa420ca6e5e05ddd57da86aa6ebef60fc",
+          "src\\ast_boost\\spectral\\signnet.py": "75ff0d873b6da32728832ad12b32c513fb8fb2a8b51f25556697343aa1926533",
+          "src\\ast_boost\\spectral\\torch_spectrum.py": "3d8c74bd99f15da50106cdc9d70eb302d303a02cfce13a18503c4c55f6b35e2d",
+          "src\\ast_boost\\spectral\\types.py": "dab96fe41324211f5c0cffe02c90820d1c0ea6810ff1efc135b9d876eb9c5109"
+        },
+        "runner_sha256": "58bb4fc0a4d852d443637765af5452b9f6cf885b7e8e4212c13374fc66e1b9ae",
+        "environment": {
+          "python": "3.12.14",
+          "torch": "2.13.0+cu130",
+          "gpu": "NVIDIA GeForce RTX 5070 Ti"
+        },
+        "test_evaluations": 0,
+        "source_snapshot_sha256": "4d59e918e1659d71e1411a178c737467dfebc6f63778015a9b258d1edab47491",
+        "protocol_sha256": "9219064fe3f9323b6711f51d0618897fe976b019aad1c3712a1a4b7636151163"
+      },
+      "dataset_identity": {
+        "train": {
+          "dataset_sha256": "a50e27e3f9daeaaa55dfd6d6049659f688714bb6c8dfebcc02d2655f7cd48243",
+          "target_sha256": "bdf090a79865fc31a716b7685e562ea6288f4e560cbf98a3db9a68769b4ff951",
+          "spectral_cache_sha256": "c0ad0ef2f39ef1ba8da8ddfc75724e9bd84c89ca5e3bf9c94f7476d67a590fc4"
+        },
+        "val": {
+          "dataset_sha256": "6039174223ff3d6a5187202ebc3fb8f6ad19e0cdfc0503a373dc2796da6ba8df",
+          "target_sha256": "25d17bd8eb68a2ee0ac6f4e13920604f6f28758dad1a7778dd7a1cc81f86bb85",
+          "spectral_cache_sha256": "446f0ba26169236a46126ebc1415b0f747bd34a9d56a8d0c67e4cd2cddc3863a"
+        }
+      }
+    },
+    "runs/lrgb_struct_replication35_seeds43_44_20260910": {
+      "manifest": {
+        "dataset": "Peptides-struct",
+        "methods": [
+          "signnet_graphgps",
+          "signnet_local",
+          "kern",
+          "full"
+        ],
+        "seeds": [
+          43,
+          44
+        ],
+        "epochs": 35,
+        "batch_size": 128,
+        "warmup_epochs": 10,
+        "sign_hidden": 32,
+        "sign_layers": 2,
+        "rw_steps": 0,
+        "train_limit": 0,
+        "val_limit": 0,
+        "device": "cuda",
+        "precision": "bf16",
+        "batch_sampler": "random",
+        "sortish_window_batches": null,
+        "model": {
+          "layer": "CustomGatedGCN+Transformer",
+          "layers": 4,
+          "width": 96,
+          "heads": 4,
+          "attention_dropout": 0.5,
+          "pooling": "mean",
+          "lap_pe_dim": 16,
+          "lap_pe_frequencies": 10
+        },
+        "optimizer": {
+          "name": "AdamW",
+          "lr": 0.0003,
+          "weight_decay": 0.0,
+          "warmup_epochs": 10,
+          "schedule": "cosine_with_warmup",
+          "clip_grad_norm": 1.0
+        },
+        "ast_controls": {
+          "frequency_labels": "eigenvalue",
+          "kernel_spectrum": "pe",
+          "kernel_diagonal": false,
+          "field_scaling": "size",
+          "pairs": 4
+        },
+        "selection": "best validation mae; test split is never instantiated",
+        "graphgps_reference": {
+          "repository": "https://github.com/rampasek/GraphGPS",
+          "commit": "28015707cbab7f8ad72bed0ee872d068ea59c94b",
+          "scope": "standalone source port; not the GraphGym training runtime"
+        },
+        "source_sha256": {
+          "src\\ast_boost\\__init__.py": "8de73348b349e5738b0dd0b746adb1b3e4349a84f40096acd8a1d7aab4b3924a",
+          "src\\ast_boost\\cli.py": "8cf60813d0b8c8d459d78689b79e9abe3ed13af2112905c89d49debb2680c4d0",
+          "src\\ast_boost\\experiments\\__init__.py": "b2a46bf28b92ac43f090b430623e75b235f28a9b213af2461edeb1ac18859804",
+          "src\\ast_boost\\experiments\\compare.py": "f2fa70b9e26c1144b297270ef4470c7fb02c55a8736ba0ee2f52f159acfc77a4",
+          "src\\ast_boost\\experiments\\data.py": "1cc39113c5214a4319f348047c6c6d05aaa562b99d1e7848305465c8b07957ba",
+          "src\\ast_boost\\experiments\\graphgps.py": "ac63962a4d4f85ecda0f264daee7d722736d03160762d4d5ee5502061f7c4616",
+          "src\\ast_boost\\experiments\\lrgb.py": "324152ca1e60986577ebc9f14d86070e7de57b59d141bf81d680dc526d6c4240",
+          "src\\ast_boost\\experiments\\model.py": "f9c2e453eda9f782d80b32fd11dd1df84cab838cdee32ed7e28ffd562271c065",
+          "src\\ast_boost\\experiments\\sampling.py": "2dd60b6258dc23502aa9cddf8341b5f11753f6d4624c66ef7ad3cba94a40175c",
+          "src\\ast_boost\\experiments\\schedule_compare.py": "a61ac4713566f6baf66a476d416b6d52f4649dedf69303e53184642d19c3ee12",
+          "src\\ast_boost\\experiments\\train.py": "75f3035321bc06f7b048ba591ecdda142660c064c0e5a47676b91e73a91201eb",
+          "src\\ast_boost\\spectral\\__init__.py": "fabdc997e0d20638cf0d0073a83770e4ede0738d3aa78a58dd768385f27ef717",
+          "src\\ast_boost\\spectral\\fields.py": "cc4aa74bc95a83d42902d45c78aa3acd7a5c67a37ce04e8230eb853603543e52",
+          "src\\ast_boost\\spectral\\gps_adapter.py": "870a906c4323ed873ad0db551769abcedb0d18e59af7533b766e14cbeb0a6a89",
+          "src\\ast_boost\\spectral\\kernel.py": "aeb232df2ce977ea9c4e566c1f1339af6ea24f879485523c5403e56a31a2c24b",
+          "src\\ast_boost\\spectral\\precompute.py": "3e6559e0213a9aadb784c6d5bbe8726fa420ca6e5e05ddd57da86aa6ebef60fc",
+          "src\\ast_boost\\spectral\\signnet.py": "75ff0d873b6da32728832ad12b32c513fb8fb2a8b51f25556697343aa1926533",
+          "src\\ast_boost\\spectral\\torch_spectrum.py": "3d8c74bd99f15da50106cdc9d70eb302d303a02cfce13a18503c4c55f6b35e2d",
+          "src\\ast_boost\\spectral\\types.py": "dab96fe41324211f5c0cffe02c90820d1c0ea6810ff1efc135b9d876eb9c5109"
+        },
+        "runner_sha256": "58bb4fc0a4d852d443637765af5452b9f6cf885b7e8e4212c13374fc66e1b9ae",
+        "environment": {
+          "python": "3.12.14",
+          "torch": "2.13.0+cu130",
+          "gpu": "NVIDIA GeForce RTX 5070 Ti"
+        },
+        "test_evaluations": 0,
+        "source_snapshot_sha256": "699784459973ca4ae783aa6da1e6b187651b5ef2b7d1c0664eab9de7461f0215",
+        "protocol_sha256": "5519d0e4f92c56f8a2832ddc1f85d6599ad94af5fd380ea7fd92de1799d7e2e6"
+      },
+      "dataset_identity": {
+        "train": {
+          "dataset_sha256": "a50e27e3f9daeaaa55dfd6d6049659f688714bb6c8dfebcc02d2655f7cd48243",
+          "target_sha256": "bdf090a79865fc31a716b7685e562ea6288f4e560cbf98a3db9a68769b4ff951",
+          "spectral_cache_sha256": "c0ad0ef2f39ef1ba8da8ddfc75724e9bd84c89ca5e3bf9c94f7476d67a590fc4"
+        },
+        "val": {
+          "dataset_sha256": "6039174223ff3d6a5187202ebc3fb8f6ad19e0cdfc0503a373dc2796da6ba8df",
+          "target_sha256": "25d17bd8eb68a2ee0ac6f4e13920604f6f28758dad1a7778dd7a1cc81f86bb85",
+          "spectral_cache_sha256": "446f0ba26169236a46126ebc1415b0f747bd34a9d56a8d0c67e4cd2cddc3863a"
+        }
+      }
+    }
+  },
+  "baseline_audit": {
+    "reference_commit": "28015707cbab7f8ad72bed0ee872d068ea59c94b",
+    "upstream_source_sha256": "985233e31edaa8e8f266b30b12fb94fe96fe3f9c16ae30c71e3143fe8f7440fd",
+    "port_source_sha256": "ac63962a4d4f85ecda0f264daee7d722736d03160762d4d5ee5502061f7c4616",
+    "scope": "CPU float64 encoder parity, including gradients and BN buffers; not GraphGym",
+    "checks": [
+      {
+        "mode": "eval",
+        "output_max_abs_error": 0.0,
+        "input_gradient_max_abs_error": 0.0,
+        "parameter_gradient_max_abs_error": 0.0,
+        "batchnorm_buffers_match": true
+      },
+      {
+        "mode": "train",
+        "output_max_abs_error": 0.0,
+        "input_gradient_max_abs_error": 0.0,
+        "parameter_gradient_max_abs_error": 0.0,
+        "batchnorm_buffers_match": true
+      }
+    ]
+  }
+}

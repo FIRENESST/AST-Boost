@@ -1,8 +1,24 @@
 # 理论—实现审计（2026-09-03）
 
+2026-09-10 增补了固定 GraphGPS commit `2801570` 的源码数值对照：
+公开 SignNet 的 MLP/GIN/GINDeepSigns 类与移植编码器在 CPU float64、训练/验证两种
+模式下，前向、输入梯度、参数梯度和 BatchNorm 状态一致；GatedGCN 局部节点/边更新
+的前向一致，输入梯度最大差异约 `1.8e-15`，参数梯度和 BatchNorm 状态一致。
+见 [SignNet 对照](GRAPHGPS_SIGNNET_PARITY_20260910.json) 和
+[GatedGCN 对照](GRAPHGPS_GATED_PARITY_20260910.json)。
+两项审计直接使用固定提交中的类体；GatedGCN 的 `torch_scatter` 求和以当前 PyG 的
+原生 scatter 适配。检查覆盖合成输入上的指定组件，不等同于完整 GraphGym、CUDA/BF16
+数值复现或数学表达力证明。可执行检查位于 `benchmarks/audit_graphgps_*.py`。
+
+2026-09-05 已新增可选频率标签读出、独立完整谱核及核对角节点通道，见
+[谱信息补全实验](MATH_FEATURES_20260905.md)。下文对无频率标签求和、截断核和
+丢弃核对角的描述对应仍保留的原始默认路径。
+
 后续已新增本地 GPS-style 训练入口和短程多种子结果，见 [实验协议](EXPERIMENTS.md)
-与 [首轮实测](ZINC_PILOT_20260903.md)。下文的实现范围表记录的是训练接入前的状态；
-目前仍未宣称完成官方 GraphGPS/SignNet 复现或收敛精度验证。
+与 [首轮实测](ZINC_PILOT_20260903.md)。2026-09-07 又完成公开 GraphGPS 层、
+RWSE/LapPE/SignNet 编码和调度器的现代运行时移植及筛查，见
+[GraphGPS 筛查报告](GRAPHGPS_SCREEN_20260907.md)。它仍是 standalone 训练循环，
+不宣称历史 GraphGym 环境或论文收敛分数复现。
 后续 [幅度条件化与吞吐试验](ACCURACY_SPEED_20260904.md) 只调整绝对输入场的
 图级幅度；原始 U、简并处理和相对核不变，没有新增严格表达力/扰动稳定性结论。
 
@@ -89,14 +105,16 @@ H1 可保留的动机是：图上的乘积场消息传递能接触跨节点相�
 | 模块 | 当前实际实现 | 不能据此声称 |
 | --- | --- | --- |
 | Lite | 每节点谱范数和特征值加权平方和这两个摘要的 MLP | 等价保留全部 `|x_i|` |
-| 一阶 PE | singleton 用带符号列，高维块用投影对角；共享 GIN 和求和 readout | 完整 BasisNet；带频率标签的完整公开 SignNet 基线 |
+| 一阶 PE | singleton 用带符号列，高维块用投影对角；共享 GIN 和带频率标签求和 readout；另有公开 GraphGPS SignNet 基线 | 完整 BasisNet；AST 一阶路径等同公开 SignNet |
 | 二阶 PE | 安全 singleton 的低频乘积场与 SignNet，空集合返回零 | H1 已验证、匹配预算下优于 Kern |
 | 谱核 | 每头 Bernstein 响应、块均值、非对角标准化 | Chebyshev/MLP 响应已实现；标准化后仍是 PSD 核 |
-| 集成 | 返回 token、bias、mask 的可微适配器及安全 softmax 工具 | 完整 GraphGPS 训练器、ZINC/LRGB 复现实验已完成 |
+| 集成 | 返回 token、bias、mask 的适配器；GraphGPS GINE 与 CustomGatedGCN 骨干、ZINC/LRGB 公开基线和 Peptides 指标可执行 | 历史 GraphGym 运行、论文收敛分数或 LRGB 多种子结论 |
 
-示例 YAML 是配置草案，不是已连接的 GraphGym 配置加载器。原来宣称开启的
-`include_eigenvalue_embedding` 改为 false，Lite 输入字段也改为实际摘要名称。
-Dropout、边特征骨干、频率标签、RWSE/SignNet 公平基线等仍需在真正训练集成中落实。
+示例 YAML 是冻结协议的可读镜像，不是 GraphGym 配置加载器；可执行入口是
+`benchmarks/experiment_graphgps_matrix.py`。频率标签、RWSE、随机反号 LapPE、
+公开 SignNet、GINE/CustomGatedGCN 边特征骨干、预热余弦、LRGB Peptides 数据与
+AP/MAE 指标现已接入。Peptides-struct 已完成完整 train/val 的 35 epoch 单种子筛查，
+但仍缺 200 epoch、多种子和公开基线的收敛比较。
 组合拉普拉斯的谱可以超出 `[0,2]`；新增 `kernel_domain_max` 供该消融设置合适的
 统一谱域，不能直接沿用归一化拉普拉斯的 2 并误以为高频仍可区分。
 
