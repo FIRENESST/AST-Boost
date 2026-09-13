@@ -11,6 +11,7 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 from ast_boost import ASTBoostPE, SpectralKernelBias
+from ast_boost.spectral.residual_kernel import GatedFullSpectrumKernel
 
 from .data import PackedGraphBatch
 from .graphgps import (
@@ -28,7 +29,7 @@ REFERENCE_METHODS = (
     "lappe_graphgps",
     "signnet_graphgps",
 )
-GRAPHGPS_ONLY_METHODS = (*REFERENCE_METHODS, "rwse_kernel_graphgps")
+GRAPHGPS_ONLY_METHODS = (*REFERENCE_METHODS, "rwse_kernel_graphgps", "rwse_gated_full_graphgps")
 ALL_METHODS = METHODS + GRAPHGPS_ONLY_METHODS
 BACKBONES = ("compact", "graphgps")
 
@@ -222,6 +223,7 @@ class GPSRegressor(nn.Module):
         default_reference_pe_dim = {
             "rwse_graphgps": 28,
             "rwse_kernel_graphgps": 28,
+            "rwse_gated_full_graphgps": 28,
             "lappe_graphgps": 8,
             "signnet_graphgps": 8,
         }.get(method, 0)
@@ -289,12 +291,16 @@ class GPSRegressor(nn.Module):
             self.feature_norm = MaskedBatchNorm(feature_width)
             self.feature_projection = nn.Linear(feature_width, pe_dim)
             self.fusion = nn.Linear(width + pe_dim, width)
-        elif method in {"rwse_graphgps", "rwse_kernel_graphgps"}:
+        elif method in {"rwse_graphgps", "rwse_kernel_graphgps", "rwse_gated_full_graphgps"}:
             self.reference_pe = GraphGPSRWSE(rw_steps, output_dim=reference_pe_dim)
             if method == "rwse_kernel_graphgps":
                 self.kernel_only = SpectralKernelBias(
                     heads=heads, degree=8, eps=kernel_eps
                 )
+            elif method == "rwse_gated_full_graphgps":
+                if kernel_spectrum != "all":
+                    raise ValueError("gated full kernel requires kernel_spectrum='all'")
+                self.kernel_only = GatedFullSpectrumKernel(heads=heads)
         elif method == "lappe_graphgps":
             self.reference_pe = GraphGPSLapPE(output_dim=reference_pe_dim)
         elif method == "signnet_graphgps":
@@ -334,7 +340,7 @@ class GPSRegressor(nn.Module):
             encoded = self.feature_projection(self.feature_norm(features, valid, node_index))
             x = self.fusion(torch.cat((x, encoded), dim=-1))
         elif self.reference_pe is not None:
-            if self.method in {"rwse_graphgps", "rwse_kernel_graphgps"}:
+            if self.method in {"rwse_graphgps", "rwse_kernel_graphgps", "rwse_gated_full_graphgps"}:
                 features = batch.rwse.reshape(-1, batch.rwse.shape[-1]).index_select(
                     0, node_index
                 )
@@ -353,7 +359,14 @@ class GPSRegressor(nn.Module):
             padded_encoded = encoded.new_zeros(valid.numel(), encoded.shape[-1])
             padded_encoded.index_copy_(0, node_index, encoded)
             x = torch.cat((x, padded_encoded.reshape(*valid.shape, -1)), dim=-1)
-            if self.kernel_only is not None:
+            if self.method == "rwse_gated_full_graphgps":
+                bias = self.kernel_only.forward_padded(
+                    batch.spectra.kernel_eigenvalues,
+                    batch.spectra.kernel_eigenvectors,
+                    batch.spectra.kernel_frequency_mask,
+                    valid,
+                )
+            elif self.kernel_only is not None:
                 bias = self.kernel_only.forward_padded(
                     batch.spectra.eigenvalues,
                     batch.spectra.eigenvectors,

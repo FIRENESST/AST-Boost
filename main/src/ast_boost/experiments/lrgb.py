@@ -93,8 +93,11 @@ def build_lrgb_records(
     rw_steps: int = 0,
     dense_threshold: int = 64,
     include_targets: bool = True,
+    kernel_spectrum: str = "pe",
 ) -> tuple[list[dict], str]:
     """Precompute one cache record per graph and return a content digest."""
+    if kernel_spectrum not in {"pe", "all"}:
+        raise ValueError("kernel_spectrum must be pe or all")
     records = []
     digest = hashlib.sha256()
     for graph in graphs:
@@ -105,7 +108,10 @@ def build_lrgb_records(
             k=k,
             dense_threshold=dense_threshold,
         )
-        prepared = prepare_spectrum(spectrum, k0_pairs=pairs)
+        complete = precompute_spectrum(
+            graph.edge_index, n=n, k=n, skip_zero=False, dense_threshold=max(n, dense_threshold)
+        ) if kernel_spectrum == "all" else None
+        prepared = prepare_spectrum(spectrum, k0_pairs=pairs, kernel_spectrum=complete)
         gps_values, gps_vectors, gps_mask = graphgps_comb_spectrum(
             graph.edge_index, n, k, dense_threshold=dense_threshold
         )
@@ -220,9 +226,12 @@ def _cache_directory(
     pairs: int,
     rw_steps: int,
     limit: int,
+    kernel_spectrum: str = "pe",
 ) -> Path:
     extent = f"limit{limit}" if limit else "full"
     name = f"{split}-k{k}-p{pairs}-rw{rw_steps}-{extent}-v{LRGB_CACHE_VERSION}"
+    if kernel_spectrum == "all":
+        name += "-kernelall"
     return cache / "peptides-common" / name
 
 
@@ -240,12 +249,15 @@ def load_lrgb_banks(
     dense_threshold=64,
     shard_size=128,
     splits=("train", "val"),
+    kernel_spectrum="pe",
 ):
     """Load Peptides banks. The test split must be explicitly requested."""
     from torch_geometric.datasets import LRGBDataset
 
     if dataset not in PEPTIDES_TARGET_DIMS:
         raise ValueError("dataset must be Peptides-func or Peptides-struct")
+    if kernel_spectrum not in {"pe", "all"}:
+        raise ValueError("kernel_spectrum must be pe or all")
     if any(split not in {"train", "val", "test"} for split in splits):
         raise ValueError("unknown LRGB split")
     if shard_size < 1:
@@ -264,6 +276,7 @@ def load_lrgb_banks(
             pairs=pairs,
             rw_steps=rw_steps,
             limit=requested_limit,
+            kernel_spectrum=kernel_spectrum,
         )
         directory.mkdir(parents=True, exist_ok=True)
         records = []
@@ -284,6 +297,7 @@ def load_lrgb_banks(
                 "pairs": pairs,
                 "rw_steps": rw_steps,
                 "dense_threshold": dense_threshold,
+                **({"kernel_spectrum": "all"} if kernel_spectrum == "all" else {}),
             }
             graphs = [dataset_split[index] for index in range(start, end)]
             if path.exists():
@@ -299,6 +313,7 @@ def load_lrgb_banks(
                     rw_steps=rw_steps,
                     dense_threshold=dense_threshold,
                     include_targets=False,
+                    kernel_spectrum=kernel_spectrum,
                 )
                 payload = {"metadata": expected, "records": shard, "digest": digest}
                 temporary = path.with_suffix(".tmp")
@@ -335,6 +350,7 @@ def load_lrgb_banks(
             "k": k,
             "pairs": pairs,
             "rw_steps": rw_steps,
+            "kernel_spectrum": kernel_spectrum,
             "dense_threshold": dense_threshold,
             "target_dim": target_dim,
             "atom_feature_dims": PEPTIDES_ATOM_FEATURE_DIMS,

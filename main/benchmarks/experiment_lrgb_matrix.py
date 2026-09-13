@@ -37,13 +37,14 @@ from ast_boost.experiments.train import (
     verify_source_hashes,
 )
 
-MATRIX_METHODS = (
+DEFAULT_METHODS = (
     "lappe_graphgps",
     "signnet_graphgps",
     "signnet_local",
     "kern",
     "full",
 )
+MATRIX_METHODS = (*DEFAULT_METHODS, "rwse_graphgps", "rwse_gated_full_graphgps")
 
 
 def metric_name(dataset):
@@ -113,7 +114,7 @@ def make_model(method, args):
         attention_dropout=0.5,
         field_scaling="size",
         frequency_labels="eigenvalue",
-        kernel_spectrum="pe",
+        kernel_spectrum=args.kernel_spectrum,
         kernel_diagonal=False,
         backbone="graphgps",
         node_feature_dims=PEPTIDES_ATOM_FEATURE_DIMS,
@@ -122,7 +123,9 @@ def make_model(method, args):
         pooling="mean",
         head_type="linear",
         local_gnn="gatedgcn",
-        reference_pe_dim=16 if method in {"lappe_graphgps", "signnet_graphgps"} else 0,
+        reference_pe_dim=16 if method in {
+            "lappe_graphgps", "signnet_graphgps", "rwse_graphgps", "rwse_gated_full_graphgps"
+        } else 0,
     ).to(args.device)
 
 
@@ -343,6 +346,7 @@ def summarize(rows, dataset):
         ("kern", "signnet_local", "h2_kern_minus_matched_first_order"),
         ("kern", "lappe_graphgps", "h2_kern_minus_lappe"),
         ("full", "kern", "h1_full_minus_kern"),
+        ("rwse_gated_full_graphgps", "rwse_graphgps", "h2_gated_full_minus_rwse"),
     ):
         left = {row["seed"]: row["best_val_metric"] for row in rows if row["method"] == target}
         right = {
@@ -374,7 +378,7 @@ def arguments(argv=None):
     parser.add_argument("--dataset", choices=PEPTIDES_TARGET_DIMS, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
-        "--methods", choices=MATRIX_METHODS, nargs="+", default=list(MATRIX_METHODS)
+        "--methods", choices=MATRIX_METHODS, nargs="+", default=list(DEFAULT_METHODS)
     )
     parser.add_argument("--seeds", type=int, nargs="+", default=[42, 43, 44, 45, 46])
     parser.add_argument("--epochs", type=int, default=200)
@@ -384,6 +388,7 @@ def arguments(argv=None):
     parser.add_argument("--sign-hidden", type=int, default=32)
     parser.add_argument("--sign-layers", type=int, default=2)
     parser.add_argument("--rw-steps", type=int, default=0)
+    parser.add_argument("--kernel-spectrum", choices=["pe", "all"], default="pe")
     parser.add_argument("--train-limit", type=int, default=0)
     parser.add_argument("--val-limit", type=int, default=0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -399,6 +404,10 @@ def main(argv=None):
         raise ValueError("require epochs > warmup_epochs >= 0")
     if args.batch_size < 1 or min(args.train_limit, args.val_limit, args.rw_steps) < 0:
         raise ValueError("invalid batch size or dataset/feature limit")
+    if any(method.startswith("rwse_") for method in args.methods) and args.rw_steps < 1:
+        raise ValueError("RWSE methods require --rw-steps > 0")
+    if "rwse_gated_full_graphgps" in args.methods and args.kernel_spectrum != "all":
+        raise ValueError("gated full residual requires --kernel-spectrum all")
     if len(set(args.methods)) != len(args.methods) or len(set(args.seeds)) != len(args.seeds):
         raise ValueError("methods and seeds must be unique")
     args.output = args.output.resolve()
@@ -443,7 +452,7 @@ def main(argv=None):
         },
         "ast_controls": {
             "frequency_labels": "eigenvalue",
-            "kernel_spectrum": "pe",
+            "kernel_spectrum": args.kernel_spectrum,
             "kernel_diagonal": False,
             "field_scaling": "size",
             "pairs": 4,
@@ -451,6 +460,12 @@ def main(argv=None):
         "selection": (
             f"best validation {metric_name(args.dataset)}; test split is never instantiated"
         ),
+        "rwse_residual": {
+            "gate": "tanh(gamma), gamma initialized exactly zero; shared across layers",
+            "response": "Bernstein degree 8; coefficients exp(-2*j/8) at initialization",
+            "standardize": False, "diagonal": False, "size_scaling": "none",
+            "reference_pe_dim": 16, "backbone_training": "joint; no frozen baseline parameters",
+        } if "rwse_gated_full_graphgps" in args.methods else None,
         "graphgps_reference": {
             "repository": GRAPHGPS_REFERENCE_URL,
             "commit": GRAPHGPS_REFERENCE_COMMIT,
@@ -493,6 +508,7 @@ def main(argv=None):
         train_limit=args.train_limit,
         val_limit=args.val_limit,
         splits=("train", "val"),
+        kernel_spectrum=args.kernel_spectrum,
     )
     identity = {
         name: {key: bank.metadata[key] for key in (
